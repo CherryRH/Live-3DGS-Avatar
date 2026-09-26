@@ -1,0 +1,29 @@
+# ---- 本地环境（conda prefix / pip / torch 扩展缓存，勿入库）----
+.conda/
+.cache/
+*.egg-info/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---- 构建产物 ----
+build/
+dist/
+*.so
+
+# ---- 数据与权重（体积大 / 涉许可，勿入库）----
+data/*
+!data/.gitkeep
+output/*
+!output/.gitkeep
+
+# ---- vendored 源码中的非必要内容 ----
+submodules/diff-gaussian-rasterization/third_party/glm/manual.md
+submodules/*/.git/
+submodules/*/build/
+submodules/*/samples/data/

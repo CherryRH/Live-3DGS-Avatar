@@ -9,9 +9,11 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import Literal, Optional
 
+import numpy as np
 import torch
 
 Space = Literal["tangent", "world"]
@@ -308,8 +310,6 @@ class Camera:
 
         `focal = H / (2·tan(fovy/2))`，再由 focal 反推 `fov_x` —— 与参照实现一致。
         """
-        import math
-
         focal = height / (2.0 * math.tan(fov_y / 2.0))
         K = torch.tensor([[focal, 0.0, width / 2.0],
                           [0.0, focal, height / 2.0],
@@ -326,8 +326,6 @@ class Camera:
 def _as_tensor(x, dtype: torch.dtype) -> torch.Tensor:
     if isinstance(x, torch.Tensor):
         return x.to(dtype)
-    import numpy as np
-
     return torch.from_numpy(np.asarray(x, dtype="float32")).to(dtype)
 
 

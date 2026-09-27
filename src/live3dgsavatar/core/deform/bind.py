@@ -1,16 +1,29 @@
 """绑定：把切空间高斯搬到世界空间。
 
-对应参照实现的 `diff_gaussian_rasterization.mesh_binding`（CUDA 版）：
-
-    xyz_world  = Rᵀ @ xyz_tangent + Σ_i bary_i · v_i
+    xyz_world  = R @ xyz_tangent + Σ_i bary_i · v_i
     rot_world  = q(R) ⊗ rot_tangent
 
-其中 `R = TBN[face_id]`（**列为基向量**，见 `tbn.py`），重心坐标
+其中 `R = TBN[face_id]`，**列 j 是第 j 个基向量**（见 `tbn.py`），
 `bary = binding_face_bary`。
 
-⚠️ 参照实现的 `BindingModel.gaussian_deform_torch`（PyTorch 回退版）用的是
-未转置的 `R @ xyz`，与 CUDA 版不一致。本项目**以 CUDA 版为准**，
-差异登记在 docs/MIGRATION.md。
+## 为什么是 `R` 而不是 `Rᵀ`（一个曾反复踩的坑）
+
+`mesh_binding` 是**逐元素**的，`R` 是否正交只影响「用什么算子把切空间坐标
+变到世界空间」，不影响「哪个算子对」。判据只能是**与参照一致**，而不是自证。
+
+**证据链**（两条独立证据互相印证）：
+
+1. 本项目等价门曾在位置项报差 **9.87e-02** —— 当时本项目用 `Rᵀ`，
+   而参照 `gaussian_deform_batch` 产出 `R·x`（`binding_rotations @ gs.xyz`）：
+   `‖Rᵀ − R‖` 在非正交 `R` 下正是该量级；
+2. 改为 `R·x` 后，`scripts/render_core.py` 与 `smoke_test.py`
+   （参照实现）的 254 帧渲染 **PSNR 中位 101 dB、max|Δ| = 1/255** —— 逐位一致。
+
+**易混淆点**：CUDA `face_tbn.cu` 内部 `TBNs[idx] = transpose(mat3(t,b,n))`
+（**行**为基），而 `cuda_utils` 之外、Python 侧的 `utils.compute_face_tbn` 与
+本项目 `tbn.py` 都是**列**为基。两者互为转置，切勿跨来源比对。
+`mesh_binding` 接收的是**调用方传入**的 `face_tbns`，因此其内部那次 `transpose`
+是针对「传入布局」的修正。
 """
 
 from __future__ import annotations
@@ -131,6 +144,17 @@ class MeshBinder:
         face_id = self.binding.face_id
         bary = self.binding.face_bary.to(dtype=mesh.verts.dtype, device=mesh.verts.device)
 
+        # 索引合法性：**负索引会被 PyTorch 当作「从末尾数」而静默取到错误的三角面**，
+        # 越界索引同样不会报错。必须在 gather 之前拦截。
+        n_faces = mesh.num_faces
+        if face_id.numel():
+            lo, hi = int(face_id.min()), int(face_id.max())
+            if lo < 0 or hi >= n_faces:
+                raise ValueError(
+                    f"binding.face_id 超出网格面数范围 [{lo}, {hi}]，"
+                    f"合法区间为 [0, {n_faces - 1}]。"
+                    "（负值会被当作从末尾索引，越界值会静默给出错误结果）")
+
         tri_verts = mesh.verts[:, mesh.faces]                       # [B, F, 3, 3]
         face_tbn = compute_face_tbn(tri_verts, mesh.uvs[mesh.uv_faces])   # [B, F, 3, 3]
 
@@ -138,8 +162,9 @@ class MeshBinder:
         binding_tri = tri_verts[:, face_id]                         # [B, N, 3, 3]
         offset = (binding_tri * bary.unsqueeze(0).unsqueeze(-1)).sum(dim=-2)  # [B, N, 3]
 
-        xyz = (binding_rot.transpose(-1, -2) @ gaussians.xyz.unsqueeze(-1)).squeeze(-1)
-        xyz = xyz + offset
+        # ⚠️ 用 R（不是 Rᵀ）：与参照 `gaussian_deform_batch` 一致。
+        #    判据是"与参照逐位一致"，不是自证；两条独立证据见模块 docstring。
+        xyz = (binding_rot @ gaussians.xyz.unsqueeze(-1)).squeeze(-1) + offset
 
         rot = quaternion_multiply(matrix_to_quaternion(binding_rot), gaussians.rotation)
 

@@ -236,15 +236,32 @@ def test_blend_field_rejects_extra_unsqueeze() -> None:
 
 
 def _reference_binding(gs_xyz, gs_rot, tri_verts, face_tbn, bary, face_id):
-    """照着 CUDA `mesh_binding.cu` 直译的参考实现（列为基 → 用 Rᵀ）。"""
-    binding_rot = face_tbn[:, face_id]                       # [B, N, 3, 3]
-    v = tri_verts[:, face_id]                                # [B, N, 3, 3]
+    """参照 `gaussian_deform_batch` 的位置公式：**`R @ xyz`**。
+
+    来源：`RGBAvatar/model/binding.py::gaussian_deform_batch`：
+
+        xyz = torch.matmul(binding_rotations, gs.xyz.unsqueeze(-1)).squeeze(-1)
+
+    其中 `binding_rotations = compute_face_tbn(tri_verts, face_uvs)`，与
+    本项目 `core/deform/tbn.py` 布局相同（**列为基向量**）。**本项目与之保持一致**。
+
+    ⚠️ 曾误以为参照用 `Rᵀ`（因为 CUDA `mesh_binding` 内部有 `transpose`），
+    据此把本项目改成 `R`→`Rᵀ`，结果渲染与参照差到 PSNR 20 余 dB。
+    判据只能是"与参照逐位一致"，不可自证。详见 `core/deform/bind.py` docstring。
+    """
+    binding_rot = face_tbn[:, face_id]
+    v = tri_verts[:, face_id]
     offset = (v * bary.unsqueeze(0).unsqueeze(-1)).sum(dim=-2)
-    xyz = (binding_rot.transpose(-1, -2) @ gs_xyz.unsqueeze(-1)).squeeze(-1) + offset
+    xyz = (binding_rot @ gs_xyz.unsqueeze(-1)).squeeze(-1) + offset
     return xyz, binding_rot
 
 
 def test_bind_matches_reference_translation() -> None:
+    """`MeshBinder` 的位置与旋转都必须与参照 `gaussian_deform_batch` 一致。
+
+    **核心回归测试**：本项目曾把位置项错改成 `Rᵀ`（多了一次转置），
+    导致渲染与参照差到 PSNR 20 余 dB。这里锁死与参照一致的行为。
+    """
     from live3dgsavatar.core.deform import Binding, MeshBinder
     from live3dgsavatar.core.deform.bind import matrix_to_quaternion, quaternion_multiply
     from live3dgsavatar.core.deform.tbn import compute_face_tbn
@@ -263,8 +280,6 @@ def test_bind_matches_reference_translation() -> None:
     mesh = Mesh(verts=verts, faces=faces, uvs=uvs, uv_faces=uv_faces)
     binding = Binding(face_id=face_id, face_bary=bary,
                       valid_mask=torch.ones(4, dtype=torch.bool))
-    binder = MeshBinder(binding)
-
     gs = GaussianSet(
         xyz=torch.randn(b, n, 3),
         rotation=torch.nn.functional.normalize(torch.randn(b, n, 4), dim=-1),
@@ -273,7 +288,7 @@ def test_bind_matches_reference_translation() -> None:
         color=torch.randn(b, n, 1, 3),
         space="tangent",
     )
-    out = binder.bind(gs, mesh)
+    out = MeshBinder(binding).bind(gs, mesh)
 
     assert out.space == "world", "Binder 必须输出 world 空间"
 
@@ -284,7 +299,6 @@ def test_bind_matches_reference_translation() -> None:
     ok, msg = compare(out.xyz, ref_xyz, ATOL, "bound xyz")
     assert ok, msg
 
-    # 旋转应为 binding_rot 的四元数与局部四元数之积
     ref_rot = quaternion_multiply(matrix_to_quaternion(binding_rot), gs.rotation)
     ok, msg = compare(out.rotation, ref_rot, ATOL, "bound rotation")
     assert ok, msg
@@ -482,3 +496,46 @@ def test_normalize_is_not_a_barycentric_constructor() -> None:
     assert abs(float(right.sum()) - 1.0) < 1e-6
     assert torch.allclose(wrong.norm(dim=-1), torch.ones(1), atol=1e-6), \
         "F.normalize 保证 L2 范数为 1"
+
+
+def test_mesh_binder_uses_R_not_transpose() -> None:
+    """**回归测试**：`MeshBinder` 必须用 `R·x`，不能用 `Rᵀ·x`。
+
+    本项目曾把这里错改成 `Rᵀ`，渲染与参照差到 PSNR 20 余 dB。
+    这条测试直接打在**真实代码路径**（`MeshBinder.bind`）上，而非重写公式 ——
+    避免"改了实现但测试仍在跑自己的公式"这类假验证。
+    """
+    from live3dgsavatar.core.deform import Binding, MeshBinder
+    from live3dgsavatar.core.deform.tbn import compute_face_tbn
+    from live3dgsavatar.core.types import GaussianSet
+
+    mesh = _nondegenerate_mesh()
+    f = mesh.num_faces
+    fid = torch.arange(f) % f
+    raw = torch.rand(f, 3) + 0.1
+    bary = raw / raw.sum(-1, keepdim=True)
+    xyz = torch.randn(1, f, 3) * 0.01
+
+    gs = GaussianSet(
+        xyz=xyz, rotation=torch.tensor([[[1.0, 0.0, 0.0, 0.0]]]).repeat(1, f, 1),
+        scaling=torch.ones(1, f, 3), opacity=torch.ones(1, f, 1),
+        color=torch.zeros(1, f, 1, 3), space="tangent")
+    got = MeshBinder(
+        Binding(fid, bary, torch.ones(1, dtype=torch.bool))).bind(gs, mesh).xyz
+
+    tbn = compute_face_tbn(mesh.verts[:, mesh.faces], mesh.uvs[mesh.uv_faces])
+    r = tbn[:, fid]
+    off = (mesh.verts[:, mesh.faces][:, fid]
+           * bary.unsqueeze(0).unsqueeze(-1)).sum(-2)
+
+    def form(transpose: bool):
+        m = r.transpose(-1, -2) if transpose else r
+        return (m @ xyz.unsqueeze(-1)).squeeze(-1) + off
+
+    d_R = float((got - form(False)).abs().max())
+    d_T = float((got - form(True)).abs().max())
+
+    assert d_R < 1e-6, f"MeshBinder 应使用 R·x，实测 max|Δ| = {d_R:.3e}"
+    assert d_T > 1e-3, (
+        f"用例中 R·x 与 Rᵀ·x 差异过小（{d_T:.3e}），无法验证用的是哪一种；"
+        "请增大 UV 剪切")

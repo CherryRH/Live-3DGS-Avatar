@@ -33,6 +33,7 @@ import torch
 from plyfile import PlyData, PlyElement
 
 from ..avatar import AvatarConfig, GaussianAvatar
+from ..deform import Binding
 
 # f_rest 占位列数：sh_degree=0 时无高阶 SH，参照实现固定写 45 个零
 F_REST_COLS = 45
@@ -234,8 +235,6 @@ def load_ply(
         raise ValueError(f"期望 3 个 face_bary_* 列，实际 {len(bary_names)}")
     face_bary = torch.from_numpy(
         np.stack([np.asarray(el[c], dtype=np.float32) for c in bary_names], axis=1))
-
-    from ..deform import Binding
 
     binding = Binding(face_id=face_id, face_bary=face_bary,
                       valid_mask=torch.ones(n, dtype=torch.bool))

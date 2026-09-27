@@ -202,6 +202,23 @@ pip install chumpy --no-build-isolation
 
 ---
 
+## 3.10 FLAME 的 dtype 不得覆盖（float64 是刻意的）
+
+`FLAMEDataset` 把姿态/形状参数存为 **float64**，而 `FLAME` 的 `v_template` / `shapedirs`
+跟随 `FlameConfig.dtype`。若把 dtype 改成 float32，会在
+`template_vertices + blend_shapes(betas, shapedirs)` 处抛：
+
+```
+RuntimeError: expected scalar type Double but found Float
+```
+
+参照仓库的 `FlameConfig` 默认 float64，因此两边一致、该问题从不暴露。
+**本项目一律使用默认值**，并由
+`tests/unit/test_architecture.py::test_flame_dtype_is_not_overridden` 静态兜住。
+网格顶点在 `FLAMEDataset` 内部已降到 float32，无需外部转换。
+
+---
+
 ## 4. 验证
 
 ### 4.1 环境自检（无需 GPU）

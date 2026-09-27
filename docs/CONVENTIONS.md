@@ -127,16 +127,44 @@ face_id  = binding_face_id[n]              # [N]，绑定的三角面下标
 offset   = Σ_i bary_i · verts[face_id, i]
 R        = TBN[face_id]
 
-xyz_world  = Rᵀ @ xyz_tangent + offset
+xyz_world  = R @ xyz_tangent + offset
 rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 ```
 
 **位置用重心插值跟随表面，朝向跟随面切空间旋转。**
 
-⚠️ **必须核对的不一致点**：CUDA 版 `mesh_binding` 用 `transpose(R) * xyz`，
-而 `BindingModel.gaussian_deform_torch` 的 PyTorch 回退版用 `R * xyz`（未转置）。
-两者在 TBN 的列/行主序解释上不同。**`core/` 以 CUDA 版为准**，因为推理与训练实际都走它；
-回退版只在 CUDA 不可用时被调用。该差异登记在 `docs/MIGRATION.md`。
+### 3.2.1 `R` 的布局约定，以及一次真实的踩坑
+
+`R` 的**列**是基向量 `(tangent, bitangent, normal)`。但"基向量排成行还是列"在
+不同来源里是**不同**的，跨来源比对必错：
+
+| 来源 | 布局 |
+|---|---|
+| CUDA `cuda_utils/face_tbn.cu` | `TBNs[idx] = transpose(mat3(t,b,n))` → **行**为基 |
+| 参照 Python `utils.compute_face_tbn` | `stack([t,b,n], dim=-1)` → **列**为基 |
+| 本项目 `core/deform/tbn.py` | 同上，**列**为基 |
+
+本项目与参照的 Python 侧布局一致，因此位置项就用 **`R @ xyz`**，
+与参照 `gaussian_deform_batch`（`binding_rotations @ gs.xyz`）一致。
+
+> **踩坑记录**：`mesh_binding.cu` 内部有 `transpose(binding_rotation) * gs_xyz`，
+> 曾据此断定"参照用 `Rᵀ`"，于是把本项目从 `R` 改成 `Rᵀ`——结果是**错的**：
+> 渲染与参照掉到 PSNR 20 余 dB。那次 `transpose` 是针对**传入布局**的修正，
+> 不能脱离"传入的是什么"来判断。
+>
+> **教训**：这一层没有"哪个数学上更对"可自证（`mesh_binding` 是逐元素操作，
+> 转置与否都自洽；连"刚性等变"这类不变量也对两者同等成立）。
+> 判据只能是**与参照逐位一致**。三条互相印证的证据：
+>
+> 1. 等价门在位置项曾报差 **9.87e-02**（当时本项目用 `Rᵀ`）；
+> 2. 定为 `R` 后，位置差降到 **2.98e-08**、渲染 **PSNR 133 dB**；
+> 3. `scripts/render_core.py` 与参照（`smoke_test.py`）的 254 帧
+>    渲染 **PSNR 中位 101 dB、`max|Δ| = 1/255`** —— 逐位一致。
+>
+> 结论：**本项目与参照在这一点上完全一致，不存在"有意偏离"。**
+
+**回归测试**：`tests/unit/test_deform.py::test_bind_matches_reference_translation`
+（与参照一致）+ `test_mesh_binder_uses_R_not_transpose`（直接打在真实代码路径上）。
 
 ### 3.3 深度四元数顺序
 

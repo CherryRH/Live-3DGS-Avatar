@@ -196,8 +196,10 @@ weights [B,K]  ×  base [N,·] + Σ_k weights[:,k] · basis[k] [K,N,·]
 | PLY 往返与 schema 互操作 | `tests/unit/test_ply.py` | 否 |
 | `deform` 全链路形状/单位性/MLP 生效 | `tests/unit/test_core_e2e.py` | 否 |
 | 分层依赖规则没被破坏 | `tests/unit/test_architecture.py` | 否 |
-| **与参照实现逐层等价** | `scripts/equivalence_check.py` | **是** |
-| **绑定层的原理性不变量** | `scripts/diagnose_binding.py` | **是** |
+| 与参照实现逐层等价 | `scripts/equivalence_check.py` | **是** |
+| **绑定层的原理性不变量**（刚性等变等） | `tests/unit/test_deform.py` | 否 |
+| 用 core 渲染出图 + 与参照逐帧对比 | `scripts/render_core.py` | **是** |
+| core 渲染链路的形状/约定 | `scripts/render_core.py --dry-run` | 否 |
 | 参照管线的性能基线 | `output/smoke/baseline.json` | 已采集 |
 
 全部不需要 GPU 的测试：
@@ -208,23 +210,22 @@ python tests/run_tests.py            # 零依赖，未装 pytest 也能跑
 
 ---
 
-## 6. 当前已知问题（读代码时会遇到）
+## 6. 易错点与已知风险
 
-**绑定层 `xyz` 与参照有 9.87e-02 的差异**，详见 `docs/MIGRATION.md` D 节。
+完整登记见 `docs/MIGRATION.md`。
 
-已确立的事实：
-
-- 误差分布在**逐高斯均值 8.8e-03、中位数 6.9e-03**、max 9.87e-02 —— 是**平滑长尾**，
-  不是统一量级的系统偏差；
-- 参数、绑定构建、混合、旋转**全部通过**；
-- 切空间 `xyz` 量级是 **8e-02**（不是 1e-5），所以旋转项与 offset **同量级**，
-  两者都可能是误差来源（我曾错误地排除过旋转项）。
-
-**重要态度**：参照实现是研究原型，自身有已知缺陷，**不能作为正确性的最终判据**。
-`scripts/diagnose_binding.py` 因此改用独立推导的运动学不变量（刚性等变、重心归一、
-面内性、TBN 正交、算子与公式一致性）来判定谁对，而不是"谁和参照一样谁对"。
-
----
+- **绑定位置项用 `R·x`**（`R` 的列为基向量），与参照一致。
+  ⚠️ 这里**极易搞错**：CUDA `face_tbn.cu` 返回的是「行为基」的版本（内部有 `transpose`），
+  而参照 Python 侧与本项目都是「列为基」。**跨来源比对布局必错。**
+  这一层还无法自证（`mesh_binding` 是逐元素操作，`R` 与 `Rᵀ` 都数学自洽），
+  判据只能是**与参照逐位一致**。详见 `CONVENTIONS.md` §3.2.1 与 MIGRATION D.1。
+- **TBN 的 tangent 与 bitangent 一般不正交**，这是 UV 参数化的正常现象，
+  不是缺陷（`normalize(t)·normalize(b) = −cos(∠A')`）。**不要试图"修"它。**
+- **退化面**（UV 面积趋零）会使 `f = 1/det` 爆炸，理论上可产生 `nan`。
+  duda 模型暂无此现象，但 781/10032 个面的 UV 面积 < 1e-6，属潜在风险（MIGRATION O2）。
+- **`face_id` 越界/负值** 已加校验：负索引会被 PyTorch 当作"从末尾数"静默取错面。
+- **FLAME 的 dtype 不得覆盖**（float64 是刻意的），否则 `Double/Float` 混算报错
+  （见 `ENVIRONMENT.md` §3.10）。
 
 ## 7. 建议的阅读顺序
 

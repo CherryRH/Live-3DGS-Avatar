@@ -113,204 +113,29 @@ app → runtime → training → core → ext
 
 ---
 
-## 3. 核心接口契约
+## 3. 核心接口契约（概要）
 
-这是全文最重要的部分。**只有这 5 个类型 + 3 个协议**，其余都是实现。
+完整签名、形状约定与逐步骤数据流见 **`docs/CORE_GUIDE.md`**；本节目的是让读者先掌握边界。
 
-### 3.1 约定
+**一个数据契约 + 三条纯函数管线 + 两个门面**：
 
-1. **Batch-first**：所有张量第一维恒为 batch（单帧时为 1），避免 RGBAvatar 中单帧/批量两套签名并存的问题。
-2. **尺度约定**：`xyz` 为米；`scaling` 为**激活后**的正尺度（非 log）；`opacity` 为 `[0,1]`；`rotation` 为**单位四元数**，WXYZ 序。
-3. **坐标空间显式标注**：高斯参数固定在 **tangent space（切空间）**，只有 `binder` 的输出是 **world space**。命名后缀 `_tan` / `_world` 强制标注。
-4. **激活函数归属**：`sigmoid`/`exp`/`normalize` 在 `GaussianSet` 的构造侧完成；`GaussianSet` 内部永远是"可直接渲染的物理量"。
+| 组件 | 位置 | 职责 | 关键约束 |
+|---|---|---|---|
+| `GaussianSet` | `core/types.py` | 跨层唯一数据契约 | batch-first；存**已激活**物理量；带 `space` 标注 |
+| `Mesh` / `Camera` / `Frame` | `core/types.py` | 几何、相机、单帧输入 | `Camera` 只存 `K` 与 `w2c`，其余派生 |
+| `BlendField` | `core/deform/blend.py` | `[B,D]` 驱动参数 → 切空间高斯 | `opacity`/`scaling` **不参与混合** |
+| `Binder` | `core/deform/bind.py` | 切空间 → 世界空间 | 位置用 **`R·x`**（`R` 列为基；布局易错，见 MIGRATION D.1） |
+| `Rasterizer` | `core/render/rasterizer.py` | 世界空间高斯 → 图像 | 唯一接触 CUDA 扩展的位置 |
+| `GaussianAvatar` | `core/avatar.py` | 参数容器 + PLY 序列化 | 网络结构由 `AvatarConfig` 显式给出 |
+| `AvatarRuntime` | `runtime/`（P2） | 组装门面：`setup/train/render/update` | — |
 
-### 3.2 `GaussianSet` —— 跨层唯一数据契约
+**约定摘要**（详见 `docs/CONVENTIONS.md`）：
 
-```python
-# core/types.py
-from dataclasses import dataclass
-import torch
-
-@dataclass
-class GaussianSet:
-    """一批可直接交给光栅化器的高斯。张量形状的 B 维恒存在。"""
-    xyz:      torch.Tensor  # [B, N, 3]   位置。按 space 字段解释其空间
-    rotation: torch.Tensor  # [B, N, 4]   单位四元数 (WXYZ)
-    scaling:  torch.Tensor  # [B, N, 3]   正尺度
-    opacity:  torch.Tensor  # [B, N, 1]   [0, 1]
-    color:    torch.Tensor  # [B, N, 1, 3] SH 0 阶系数（DC）
-
-    space: str = "tangent"  # "tangent" | "world"，显式标注，防止空间混用
-
-    def to(self, device) -> "GaussianSet": ...
-    def detach(self) -> "GaussianSet": ...
-    def __len__(self) -> int: ...   # N
-```
-
-**与 RGBAvatar 的差异**：
-- 原名 `GaussianAttributes`，改名以强调"这是一组高斯"。
-- **新增 `space` 字段**。RGBAvatar 靠调用顺序隐式区分切空间/世界空间的高斯，这是最容易出错的地方。
-- **固定 batch 维**。RGBAvatar 的 `GaussianAttributes` 有时是 `[N,3]` 有时是 `[B,N,3]`，导致 `render_gs` 与 `render_gs_batch` 两份代码（且其中一份已标注 `# legacy`）。
-
-### 3.3 `Mesh` / `Camera` / `Frame`
-
-```python
-# core/types.py
-@dataclass
-class Mesh:
-    verts: torch.Tensor  # [B, V, 3]  世界坐标
-    faces: torch.Tensor  # [F, 3]     int32，拓扑恒定
-    uvs:   torch.Tensor  # [Vuv, 2]   模板 UV，恒定
-    uv_faces: torch.Tensor  # [F, 3]  int32，恒定
-
-@dataclass
-class Camera:
-    K: torch.Tensor       # [B, 3, 3] 或 [3,3]
-    w2c: torch.Tensor     # [B, 4, 4] world→camera（注意：不是 view matrix 的转置混淆）
-    width: int
-    height: int
-    # fov_x / fov_y / position 由属性派生，不重复存储
-
-@dataclass
-class Frame:
-    """一帧的全部输入。训练与推理共用。"""
-    mesh: Mesh
-    blend_weight: torch.Tensor  # [B, D] FLAME 参数（离线 129 维 / NeRSemble 100 维）
-    camera: Camera
-    image: torch.Tensor | None = None   # [B, 3, H, W] GT，推理时为 None
-    mask:  torch.Tensor | None = None   # [B, 1, H, W]
-```
-
-**`Camera` 的明确约定**（这是 RGBAvatar 里最混乱的部分）：
-- 内部**只存 `w2c`**（world→camera）与 `K`。
-- `w2v`（view matrix）与 `full_proj` 通过方法派生，不缓存多份。
-- 所有矩阵采用**行主序、右乘列向量**（`p_clip = P @ V @ p_world`）的数学约定；传给 CUDA 扩展时在 `core/render/` 内部统一转置为列主序，**这个转置只允许出现在一个地方**。
-
-### 3.4 `BlendField` —— 权重 → 高斯
-
-```python
-# core/deform/blend.py
-class BlendField(Protocol):
-    """把驱动参数映射为切空间高斯。对应 RGBAvatar 的 linear_blending + MLP。"""
-
-    def __call__(self, blend_weight: torch.Tensor) -> GaussianSet:
-        """blend_weight: [B, D]  →  GaussianSet(space='tangent')"""
-```
-
-### 3.5 `Binder` —— 切空间 → 世界空间
-
-```python
-# core/deform/bind.py
-class Binder(Protocol):
-    """把切空间高斯按模板网格变形搬到世界空间。对应 RGBAvatar 的 mesh_binding。"""
-
-    def bind(self, gaussians: GaussianSet, mesh: Mesh) -> GaussianSet:
-        """GaussianSet(space='tangent') + Mesh  →  GaussianSet(space='world')"""
-```
-
-**为什么把 blend 与 bind 拆成两个协议**：这是本架构为"未来上半身"预留的**唯一关键扩展点**。头部用 `BlendField = 20 基线性混合`、`Binder = 三角面 TBN`；未来身体用 `BlendField = LBS 权重`、`Binder = 混合拓扑拼接`。**渲染层完全不需要改动。**
-
-### 3.6 `Rasterizer`
-
-```python
-# core/render/rasterizer.py
-class Rasterizer(Protocol):
-    def render(
-        self,
-        gaussians: GaussianSet,   # space='world'
-        camera: Camera,
-        bg_color: torch.Tensor,   # [B, 3]
-        target_image: torch.Tensor | None = None,  # 仅训练态需要
-    ) -> "RenderOutput": ...
-```
-
-```python
-@dataclass
-class RenderOutput:
-    color: torch.Tensor       # [B, 3, H, W]
-    alpha: torch.Tensor       # [B, 1, H, W]
-    est_color: torch.Tensor | None = None  # [B, N, 3]   仅训练态
-    est_weight: torch.Tensor | None = None # [B, N]      仅训练态
-    radii: torch.Tensor | None = None      # [B, N]      仅训练态
-```
-
-两个实现：
-
-| 实现 | 用途 | 后端 |
-|---|---|---|
-| `BatchRasterizer` | 训练（需要梯度、`est_color/est_weight`、批并行） | `BatchGaussianRasterizer` + `_BatchRasterizeGaussians` |
-| `SimpleRasterizer` | 推理（无梯度、逐帧循环） | `GaussianRasterizer` |
-
-> **修正 RGBAvatar 的一处混乱**：其 `diff_renderer/gaussian.py` 里有 `render_gs` 和 `render_gs_batch`（标注 `# legacy`）两份，`model/mv_reconstruction.py` 里还有第三份 `render_gs_batch`。本设计**把三者合并为一套协议 + 两个后端实现**，语义差异由"是否传 `target_image`"表达。
-
-### 3.7 `GaussianAvatar` —— 参数容器
-
-```python
-# core/avatar.py
-@dataclass
-class AvatarConfig:
-    tex_size: int = 256
-    num_basis_in: int = 129      # 输入 FLAME 参数维度 D
-    num_basis_blend: int = 20    # 约简后的基数量 K
-    use_blend: bool = True
-    use_weight_proj: bool = True
-    use_mlp_proj: bool = True
-    init_scaling: float = 0.0008
-    init_opacity: float = 0.5
-
-class GaussianAvatar:
-    """参数容器。持有可学习参数；不持有优化器、不持有相机、不做渲染。"""
-
-    # ---- 静态参数（[N, ·]）----
-    xyz:      Parameter  # [N, 3]
-    opacity:  Parameter  # [N, 1]    (logit)
-    scaling:  Parameter  # [N, 3]    (log)
-    rotation: Parameter  # [N, 4]
-    color_dc: Parameter  # [N, 1, 3]
-
-    # ---- Blendshape 基（[K, N, ·]）----
-    xyz_b:      Parameter  # [K, N, 3]
-    rotation_b: Parameter  # [K, N, 4]
-    color_b:    Parameter  # [K, N, 1, 3]
-
-    # ---- 权重复约简 MLP（D → K）----
-    weight_module: nn.Module
-
-    # ---- 绑定信息（由模板决定，非学习参数）----
-    binding_face_id:   Tensor  # [N]    int32
-    binding_face_bary: Tensor  # [N, 3]
-    valid_mask:        Tensor  # [tex_size²] bool
-
-    def attribute_names(self) -> list[str]: ...      # 供优化器分组
-    def save(self, path: Path) -> None: ...
-    @classmethod
-    def load(cls, path: Path, cfg: AvatarConfig) -> "GaussianAvatar": ...
-    def build_blend_field(self) -> BlendField: ...
-    def build_binder(self, template) -> Binder: ...
-```
-
-**参数量（bala，N=60349, K=20）**：`xyz_b/rotation_b/color_b = 60349×20×10 ≈ 12.07M` 参数 ≈ 48 MB，是模型主体。
-
-### 3.8 门面
-
-```python
-# runtime/avatar_runtime.py
-class AvatarRuntime:
-    """把模板 + avatar + 数据集 + 渲染器组装成可直接使用的对象。
-    这是 app 层唯一需要认识的类。"""
-
-    @classmethod
-    def setup(cls, cfg: RuntimeConfig) -> "AvatarRuntime": ...
-
-    def train(self, dataset, steps: int) -> "TrainStats": ...
-    def render(self, frame: Frame) -> RenderOutput: ...
-    def update(self, frames: Iterable[Frame]) -> "UpdateStats": ...   # 在线更新
-    def snapshot(self) -> "AvatarSnapshot": ...
-```
-
-四件事：`setup / train / render / update`。不多不少。
-
----
+1. 所有张量 batch-first，单帧 `B=1`；
+2. 激活在构造侧完成，`GaussianSet` 内永远是可直接渲染的物理量；
+3. 行主序 → 列主序的转置**只允许**发生在 `camera_utils.to_kernel_matrix`；
+4. 深度映射到 **[0, 1]**（OpenGL 约定），不是 `[-1, 1]`；
+5. `sh_degree = 0`，只用 SH 的 DC 项。
 
 ## 4. 目录结构
 
@@ -336,28 +161,14 @@ Live3DGSAvatar/
 │   │   └── render/
 │   │       ├── rasterizer.py    # Rasterizer 协议 + 两个实现
 │   │       └── camera_utils.py  # 矩阵转置/列主序转换的唯一入口
-│   ├── data/
-│   │   ├── flame_dataset.py     # INSTA 格式（当前仅 duda）
-│   │   └── sampler.py           # local-global 采样池
-│   ├── training/
-│   │   ├── losses.py            # l1 / ssim / lpips / alpha / sparsity / orth
-│   │   ├── offline.py           # 离线训练循环
-│   │   └── online.py            # 在线/流式训练循环
-│   ├── tracking/
-│   │   ├── base.py              # Tracker 协议
-│   │   └── offline_flame.py     # 读取 metrical-tracker 的 checkpoint 输出
-│   ├── runtime/
-│   │   ├── avatar_runtime.py    # AvatarRuntime 门面
-│   │   └── session.py           # 服务端渲染会话（骨架，P3 填充）
-│   ├── streaming/               # P3：编码/传输
-│   │   └── __init__.py
-│   ├── app/
-│   │   ├── cli.py               # train / render / update 三个子命令
-│   │   └── gui.py               # P2：图形化程序
+│   ├── data/                    # P2（INSTA 格式读取、local-global 采样池）
+│   ├── training/                # P2（离线 / 在线训练循环、损失）
+│   ├── tracking/                # P4（Tracker 协议 + 离线 metrical-tracker 适配）
+│   ├── runtime/                 # P2/P3（AvatarRuntime 门面、服务端会话）
+│   ├── streaming/               # P3（编码/传输）
+│   ├── app/                     # P2（CLI / GUI）
 │   └── compat/
-│       └── rgba_avatar.py       # 与 RGBAvatar 的对照实现（仅测试用）
-├── ext/ 与 third_party/ 已取消 ─────────────────────────────────────────
-│   diff-gaussian-rasterization / nvdiffrast / fused-ssim 统一并入 submodules/
+│       └── __init__.py          # 第三方兼容补丁（numpy 2.x 别名等）
 ├── submodules/                  ← 全部 vendored，统一从此处构建
 │   ├── ATTRIBUTION.md           #   来源 / 许可 / 差异登记
 │   ├── diff-gaussian-rasterization/   # 唯一的 CUDA 内核
@@ -366,18 +177,24 @@ Live3DGSAvatar/
 │   ├── flame/                         # P1 拷入
 │   └── fuhead/                        # P1 拷入
 ├── tests/
-│   ├── unit/                    # 单测
-│   ├── equivalence/             # 数值等价测试（黄金测试）
-│   └── fixtures/                # 小规模固定输入
+│   ├── run_tests.py             # 零依赖测试运行器（未装 pytest 也能跑）
+│   ├── support.py               # 参照加载与比较工具
+│   ├── reference_scene.py       # 参照侧几何/相机适配（脚本用，不属 core）
+│   ├── unit/                    # 单测（45 项，全部无需 GPU）
+│   └── equivalence/             # 数值等价门（stages.py + GPU 测试）
 ├── scripts/
-│   ├── setup_env.sh             # 一键建环境（幂等）—— P0 已完成
-│   ├── env_check.py             # 环境自检（无 GPU 可跑）—— P0 已完成
-│   ├── smoke_test.py            # GPU 冒烟 + 基线性能采集 —— P0 已完成
-│   └── export_baseline.py       # 从 RGBAvatar 导出基线产物（P1）
+│   ├── setup_env.sh             # 一键建环境（幂等）—— P0
+│   ├── env_check.py             # 环境自检（无 GPU 可跑）—— P0
+│   ├── smoke_test.py            # 参照实现的 GPU 冒烟 + 性能基线 —— P0
+│   ├── equivalence_check.py     # 数值等价验收门（分层比对）—— P1
+│   ├── render_core.py           # 用 core/ 渲染出图 + 与参照对比 —— P1
+│   └── _compat_shim.py          # 独立脚本用的精简兼容补丁
 ├── data/                        # 输入资产（gitignore）
 │   └── FLAME2020/               # generic_model.pkl / flame_uv.npz / eyelid
 ├── output/                      # 产物（gitignore）
-│   └── <subject>/<work_name>/   #   model.ply + config.yaml + render_image/
+│   ├── smoke/                   #   smoke_test.py 的输出 + baseline.json
+│   ├── equivalence/             #   equivalence_check.py 的输出
+│   └── <subject>/<work_name>/   #   render_core.py 的输出 + render_core.json
 ├── requirements.txt
 └── README.md
 ```
@@ -427,29 +244,13 @@ error: could not delete 'build/lib.linux-x86_64-cpython-310/nvdiffrast/__init__.
 
 ---
 
-## 5. RGBAvatar → Live3DGSAvatar 映射表
+## 5. 与 RGBAvatar 的对应关系
 
-| RGBAvatar | Live3DGSAvatar | 处置 | 备注 |
-|---|---|---|---|
-| `diff_renderer/gaussian.py::GaussianAttributes` | `core/types.py::GaussianSet` | 重写 | 加 `space` 字段，固定 batch 维 |
-| `diff_renderer/gaussian.py::render_gs` | `core/render/rasterizer.py::SimpleRasterizer` | 重写 | 推理路径 |
-| `diff_renderer/gaussian.py::render_gs_batch` | 合并入上者 | **删除** | 原标注 `# legacy`，逐帧循环 |
-| `diff_renderer/batch_gaussian.py::BatchGaussianRenderer` | `core/render/rasterizer.py::BatchRasterizer` | 重写 | 训练路径 |
-| `diff_renderer/texture.py::compute_rast_info` | `core/deform/bind.py::build_binding` | 保留逻辑 | 用 nvdiffrast 在 UV 域光栅化 |
-| `model/gaussian.py::GaussianModel` | `core/avatar.py::GaussianAvatar` | 重写 | 参数与 PLY 拆开 |
-| `model/binding.py::BindingModel` | `core/deform/{blend,bind}.py` | **拆分** | 见 §3.4/§3.5 |
-| `model/binding.py::FLAMEBindingModel` | `core/deform/` + `core/template/flame.py` | 重写 | |
-| `model/binding.py::FuHeadBindingModel` | 同上 | 保留 | 在线路径的备选模板 |
-| `model/reconstruction.py::Reconstruction` | `training/offline.py` | 重写 | 单目 |
-| `model/mv_reconstruction.py::MultiViewReconstruction` | `training/offline.py`（多视角变体） | 重写 | 去重复 |
-| `model/mv_reconstruction.py::render_gs_batch` | 合并入 `SimpleRasterizer` | **删除** | 第三份重复实现 |
-| `camera/camera.py` | `core/types.py::Camera` + `camera_utils.py` | 重写 | 消除多份矩阵缓存 |
-| `dataset/flame_dataset.py` | `data/flame_dataset.py` | 重写 | 可读旧格式（回归用） |
-| `dataset/sampler.py` | `data/sampler.py` | 保留逻辑 | local-global 池 |
-| `submodules/flame` | `submodules/flame` | vendor（P1） | |
-| `submodules/fuhead` | `submodules/fuhead` | vendor（P1） | |
-| `submodules/diff-gaussian-rasterization` | `submodules/diff-gaussian-rasterization` | vendor | |
-| `utils.py` | 按职责拆分 | 重写 | `l1_loss`/`ssim` → `training/losses.py`；`Struct` → 用 dataclass 替代 |
+参照实现是**只读**的算法蓝本。本项目的重写范围与所有有意偏离，
+**完整登记在 `docs/MIGRATION.md`**（缺陷修复 K1–K4、有意偏离 H1–H6、持续关注 O1–O5、被推翻的推理 D 节）。
+
+简述：`model/` `diff_renderer/` `camera/` `dataset/` 与脚本层**全部重写**；
+`submodules/` 下的 CUDA 扩展与 FLAME/FuHead 实现**vendor 后原样使用**。
 
 ---
 
@@ -587,28 +388,58 @@ class Session:
 | 阶段 | 目标 | 验收标准 | 状态 |
 |---|---|---|---|
 | **P0 基线与环境** | 环境可复现 + 基线可复现 | ① 单条命令从零建环境 ② `scripts/env_check.py` 全绿 ③ 用 `duda` 的 `model.ply` 跑通渲染并记录 **FPS / 峰值显存 / 单帧耗时** | ✅ 全部完成 |
-| **P1 只读内核重写** | `core/` 完成，行为与 RGBAvatar 一致 | **数值等价门**：分层比对参照实现，中间属性 `max\|Δ\| < 1e-5`，渲染图 **`PSNR > 60 dB` 或 `max\|Δ\| < 1e-3`**；`tests/equivalence/` 全绿 | 代码 ✅ / 等价门 ⏳ 待 GPU 运行 |
+| **P1 只读内核重写** | `core/` 完成，行为与 RGBAvatar 一致 | **数值等价门**：分层比对参照实现，中间属性 `max\|Δ\| < 1e-5`，渲染图 **`PSNR > 60 dB` 或 `max\|Δ\| < 1e-3`**；`tests/equivalence/` 全绿 | ✅ **已验收**（见 9.2） |
 | **P2 训练重写 + GUI** | 离线训练复现 + 图形化程序 | ① 在 `duda` 上 PSNR 与论文差距 **< 1 dB** ② GUI 可启动训练、实时预览、导出 | 未开始 |
 | **P3 服务化** | 服务端渲染 + 推流 | 端到端延迟 **< 150 ms**（目标 100 ms）；单路稳定 10 分钟 | 未开始 |
 | **P4 动态更新** | 在线训练 | 按帧顺序在线重建，PSNR 与离线差距 **< 1 dB** | 未开始 |
 
 **P0 与 P1 之间不可跳过**：数值等价门是本次重写的安全网。没有它，无法区分"架构改进"与"引入了 bug"。
 
-### 9.1 P1 交付物与当前状态
+### 9.1 P1 交付物
 
 | 交付物 | 状态 |
 |---|---|
 | `docs/CONVENTIONS.md` | ✅ 坐标/矩阵/空间/精度约定 |
-| `docs/MIGRATION.md` | ✅ 4 项缺陷修复 + 6 项有意偏离登记 + 1 项未解决偏差 |
+| `docs/MIGRATION.md` | ✅ 4 项缺陷修复 + 6 项有意偏离 + 5 项持续关注 |
 | `docs/CORE_GUIDE.md` | ✅ 代码导览：形状流转、设计原因、陷阱清单、"验证 X 跑哪条命令" |
 | `core/types.py` · `core/avatar.py` · `core/io/ply.py` | ✅ 类型契约、参数容器、PLY 互操作 |
 | `core/deform/{tbn,bind,blend,binding}.py` | ✅ TBN / 绑定 / 混合 / UV 绑定构建 |
 | `core/render/{camera_utils,rasterizer}.py` | ✅ 矩阵边界 + 两个光栅化后端 |
-| `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**35 项**，全部无需 GPU（含架构一致性检查） |
-| `tests/equivalence/` · `scripts/equivalence_check.py` | ✅ 已交付并执行；发现绑定层 `xyz` 偏差（见 MIGRATION D 节） |
-| `scripts/diagnose_binding.py` | ✅ 绑定层**原理性验证**（运动学不变量，不以参照为判据） |
+| `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**45 项**，全部无需 GPU |
+| `tests/equivalence/` · `scripts/equivalence_check.py` | ✅ 等价门（分层比对 + 前置检查） |
+| `scripts/render_core.py` | ✅ 用 `core/` 渲染出图 + 与参照逐帧对比（含 CPU dry-run） |
 
-### 9.2 分层规则的可执行化
+### 9.2 P1 验收证据（已通过）
+
+**① 数值等价门** —— `python scripts/equivalence_check.py`，**31 项全部通过**：
+
+| 层 | 结果 |
+|---|---|
+| 参数（10 项） | 逐位一致（`max\|Δ\| = 0`）：8 组参数 + `weight_module` + 通道数 |
+| 绑定构建（5 项） | 逐位一致：`valid_mask` / `face_id` / `face_bary` / 高斯数 / 与参照缓存一致 |
+| 混合（6 项） | `xyz` 1.5e-08、`rotation` 7.9e-07、`color` 1.4e-06，均远低于 1e-5 |
+| 绑定（5 项） | `xyz` **2.98e-08**、`rotation` 6.6e-07，其余逐位一致 |
+| 渲染（4 项） | `color` **PSNR 133.47 dB**、`alpha` 135.48 dB |
+
+**② 逐帧渲染复现** —— `python scripts/render_core.py --frames -1 --compare-ref output/smoke`：
+
+| 指标 | 结果 |
+|---|---|
+| 可比帧数 | **254 / 254** |
+| 渲染图 PSNR | **中位 101.07 dB**，最小 86.63 dB |
+| `max\|Δ\|` | 中位 **1 / 255**（uint8 最后一位） |
+| 平均耗时 | 11.19 ms/帧（89.3 FPS）·中位 9.86 ms |
+| 峰值显存 | 106 MiB |
+| 参照基线 | 6.94 ms/帧（144 FPS）·峰值 1648 MiB（batch=10 预分配） |
+
+**③ 单元测试** —— `python tests/run_tests.py`：**45 通过 / 0 失败 / 1 跳过**（跳过项为需 GPU 的等价测试）。
+
+> **性能说明**：89 FPS vs 参照 144 FPS 的差距来自 `deform` 走纯 PyTorch
+> （`linear_blending` 默认不用 CUDA 内核、TBN 每帧全量重算）。这是**有意识的取舍**：
+> CUDA 版 `linear_blending` 在设备不可用时静默返回全零（见 MIGRATION H4）。
+> 优化项已记入 MIGRATION O 节，不影响 P1 验收。
+
+### 9.3 分层规则的可执行化
 
 `docs/ARCHITECTURE.md` §2.3 声明的依赖规则由 `tests/unit/test_architecture.py` 强制检查：
 
@@ -618,11 +449,11 @@ class Session:
 | CUDA 隔离 | `diff_gaussian_rasterization` 只允许在 `core/render/rasterizer.py` 与 `core/deform/blend.py` 出现 |
 | 无 I/O | `core/` 不得 import `argparse` / `sys`；`plyfile` / `json` 仅限 `core/io/ply.py` |
 | 导入期无设备访问 | `core/` 模块作用域不得调用 `torch.cuda.*`（否则无 GPU 环境下导入即失败） |
+| FLAME dtype | 不得覆盖 `FlameConfig.dtype`（float64 是刻意的，见 `ENVIRONMENT.md` §3.10） |
 
-最后一条尤其重要：它保证了「导入 `core` 不需要 GPU」这个性质，
-CPU 侧的 35 项测试才得以成立。
+**「导入 `core` 不需要 GPU」** 这一性质尤其重要：CPU 侧的 45 项测试才得以成立。
 
-### 9.3 等价门的执行结构
+### 9.4 等价门的执行结构
 
 等价门分**六步**执行，其中比对分五层，任一层失败都能直接定位，
 而不是只看到「图不一样」：
@@ -644,20 +475,20 @@ CPU 侧的 35 项测试才得以成立。
 
 ---
 
-## 10. 已知问题与设计决策（避免继承 RGBAvatar 的缺陷）
+## 10. 避免继承 RGBAvatar 的缺陷
 
-| 编号 | RGBAvatar 的问题 | 本设计的处置 |
-|---|---|---|
-| K1 | `BindingModel.clone()` 签名与 `__init__` 不匹配（调用 5 参数，签名 3 参数）→ 调用即报错 | 不移植 `clone()`；快照用 `AvatarSnapshot`（state_dict 形式） |
-| K2 | `save_ply()` 引用不存在的 `self.binding_face_id` 属性 → 任何模型都保存失败 | 绑定信息归属 `GaussianAvatar`（非 `GaussianModel`），保存路径统一 |
-| K3 | `load_ply()` 从 config 读取 `num_basis_blend` 而非文件列数 → config 与 PLY 不一致时静默出错 | PLY 中记录 `num_basis_blend`；加载时校验并报错 |
-| K4 | `render_gs_batch` 存在三份重复实现，其中一份标注 `# legacy` | 合并为 `Rasterizer` 协议 + 两个后端（§3.6） |
-| K5 | 单帧/批量两套张量形状并存，靠调用方记忆区分 | 固定 batch-first（§3.1） |
-| K6 | 切空间/世界空间高斯靠调用顺序区分，无显式标注 | `GaussianSet.space` 字段（§3.2） |
-| K7 | `compute_rast_info` 有 `FIXME: precision issue across different devices` | 绑定结果缓存进模型文件；加载时校验 `N` 与 `binding_face_id` 长度一致 |
-| K8 | 依赖 `Struct(**dict)` 传参，无类型检查 | 全部替换为 dataclass（`AvatarConfig` / `RuntimeConfig`） |
-| K9 | CUDA/torch 版本强耦合，且官方文档版本建议不正确 | `env_check.py` + 构建时版本校验（§8.2） |
-| K10 | `load_ply` 中 `f_rest` 恒为 45 个零（sh_degree=0 的占位） | 保留占位以兼容 3DGS 工具链，但明确注释其恒零 |
+完整登记见 **`docs/MIGRATION.md`**（A 节：4 项缺陷修复 K1–K4；B 节：6 项有意偏离 H1–H6；
+C 节：5 项持续关注 O1–O5）。核心几条：
+
+| 参照缺陷 | 本项目处置 |
+|---|---|
+| `save_ply()` 引用不存在的属性 → 保存必失败 | 绑定信息归属 `GaussianAvatar`（`register_buffer`） |
+| `load_ply()` 从配置读基数量而非文件列数 → 静默读错 | PLY 头写 `comment gaussian_config` 自描述，加载时交叉校验 |
+| `clone()` 签名不匹配 → 死代码 | 不移植；快照用 `state_dict()` |
+| 三份重复的 `render_gs_batch`（含一份 `# legacy`） | 合并为 `Rasterizer` 协议 + 两个后端 |
+| 单帧/批量两套张量形状并存 | 固定 batch-first，`GaussianSet.space` 显式标注空间 |
+| `linear_blending` 在设备不可用时**静默返回全零** | 默认走纯 PyTorch，CUDA 路径显式 opt-in + 两道防护 |
+| CUDA/torch 版本强耦合 | `env_check.py` + `docs/ENVIRONMENT.md` 版本矩阵 |
 
 ---
 

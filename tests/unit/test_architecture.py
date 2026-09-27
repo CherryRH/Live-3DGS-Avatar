@@ -159,3 +159,32 @@ def test_importing_core_does_not_require_gpu() -> None:
                  "live3dgsavatar.core.deform", "live3dgsavatar.core.render",
                  "live3dgsavatar.core.io", "live3dgsavatar.core.types"):
         importlib.import_module(name)
+
+
+def test_flame_dtype_is_not_overridden() -> None:
+    """**回归测试**：不得覆盖 `FlameConfig.dtype`。
+
+    `FLAMEDataset` 把姿态/形状参数存为 **float64**，而 `FLAME` 的
+    `v_template` / `shapedirs` 跟随 `cfg.dtype`。把它改成 float32 会让
+    `template_vertices(float32) + blend_shapes(betas(float64), ...)`
+    抛 `expected scalar type Double but found Float`。
+
+    参照仓库的 `FlameConfig` 默认 float64，故两边一致、从不暴露该问题。
+    本项目曾在脚本侧改成 float32 而踩坑，此处用静态检查钉住。
+    """
+    import re
+
+    offenders: list[str] = []
+    for path in sorted(REPO_ROOT.rglob("*.py")):
+        if "__pycache__" in path.parts or "submodules" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "FlameConfig" not in text:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            code = line.split("#", 1)[0]          # 跳过注释（含本测试自身的文档示例）
+            if re.search(r"\bcfg\.dtype\s*=", code) or \
+                    re.search(r"FlameConfig\([^)]*dtype", code):
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
+    assert not offenders, (
+        "不得覆盖 FLAME 的 dtype（会导致 Double/Float 混算）：\n  " + "\n  ".join(offenders))

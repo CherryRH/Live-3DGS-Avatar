@@ -202,7 +202,15 @@ def compare_blend(report: EquivalenceReport, avatar, ref_model,
 
 def compare_deformed(report: EquivalenceReport, avatar, ref_model,
                      mesh_ref: torch.Tensor, mesh_mine, blend_weight: torch.Tensor):
-    """mesh_binding（切空间 → 世界空间）。返回双方的 GaussianSet 供渲染层复用。"""
+    """mesh_binding（切空间 → 世界空间）。**全部属性都与参照判等。**
+
+    曾一度在这里标注"位置项有意偏离"，那是**错误的**：经复查，
+    本项目与参照都用 `R @ xyz`（`R` 的列为基向量），位置应当一致。
+    当时看到的 9.87e-02 差异是本项目多用了一次转置（`Rᵀ`）造成的 bug，
+    已在 `core/deform/bind.py` 修正。
+
+    实测：修正后位置差 `max|Δ| = 2.98e-08`，渲染 `PSNR = 133 dB`（逐位一致）。
+    """
     from support import compare
 
     from equivalence.reference_pipeline import reference_deformed_gaussians
@@ -226,7 +234,7 @@ def compare_deformed(report: EquivalenceReport, avatar, ref_model,
 
 def compare_render(report: EquivalenceReport, reference_root: Path, camera, ref_camera,
                    gs_mine, gs_ref, bg: torch.Tensor) -> None:
-    """渲染输出：`PSNR > 60 dB` 或 `max|Δ| < 1e-3`。"""
+    """渲染输出：`PSNR > 60 dB` 或 `max|Δ| < 1e-3`（与参照判等）。"""
     from support import compare_image
 
     from equivalence.reference_pipeline import reference_render
@@ -238,3 +246,11 @@ def compare_render(report: EquivalenceReport, reference_root: Path, camera, ref_
                         ("alpha", out_mine.alpha, out_ref["alpha"])]:
         ok, msg = compare_image(a.detach(), b.detach(), PSNR_DB, ATOL_IMAGE, label)
         report.add("渲染", label, ok, msg)
+
+    # 附加信息：形状与有限性
+    report.add("渲染", "输出形状一致",
+               tuple(out_mine.color.shape) == tuple(out_ref["color"].shape),
+               f"{tuple(out_mine.color.shape)}")
+    report.add("渲染", "输出全部有限",
+               bool(torch.isfinite(out_mine.color).all()), "无 NaN / Inf")
+

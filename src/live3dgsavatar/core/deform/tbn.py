@@ -21,6 +21,7 @@ import torch.nn.functional as F
 def compute_face_tbn(
     face_vertices: torch.Tensor,   # [B, F, 3, 3]
     face_uvs: torch.Tensor,        # [F, 3, 2] （或可广播的 [B, F, 3, 2]）
+    mode: str = "reference",
 ) -> torch.Tensor:
     """逐面 TBN。
 
@@ -28,9 +29,28 @@ def compute_face_tbn(
         face_vertices: [B, F, 3, 3] 每个三角面的三个顶点
         face_uvs:      [F, 3, 2] 每个三角面的三个 UV
 
+    Args:
+        mode:
+            - ``"reference"``（默认）：逐列归一化，**不强制正交**。与参照实现的
+              CUDA/Python 版本逐元素一致。
+            - ``"orthonormal"``：以几何法线为准做 Gram-Schmidt，得到正交基
+              `(t, n×t, n)`。``R`` 成为真正的旋转，``Rᵀ = R⁻¹`` 严格成立。
+
     Returns:
         [B, F, 3, 3]，**第 j 列是第 j 个基向量** `(tangent, bitangent, normal)`。
-        与 CUDA 内核 `compute_face_tbn` 的输出一致。
+        与 CUDA 内核 `compute_face_tbn` 的输出一致（``mode="reference"``）。
+
+    Note:
+        **tangent 与 bitangent 本来就不正交。** 代数上
+
+            normalize(t) · normalize(b) = −cos(∠A')
+
+        其中 `A'` 是 UV 三角形在顶点 `a` 处的内角；两者正交当且仅当该角为直角。
+        一般 UV 图不是正交参数化，因此非正交是**正常现象**，不是缺陷。
+        （曾误把"正交性"当作正确性判据，见 docs/MIGRATION.md D 节。）
+
+        后果：`R` 一般不是正交阵，故 `Rᵀ ≠ R⁻¹`。绑定步骤使用 `Rᵀ` 时，
+        变换会被 UV 剪切污染 —— 这是 `mode="orthonormal"` 存在的理由。
 
     公式（见 docs/CONVENTIONS.md §3.1）::
 
@@ -65,7 +85,19 @@ def compute_face_tbn(
     normal = torch.cross(edge1, edge2, dim=-1)
 
     tbn = torch.stack([tangent, bitangent, normal], dim=-1)   # [B, F, 3, 3]，列为基
-    return F.normalize(tbn, dim=-2)                            # 逐列归一化
+    tbn = F.normalize(tbn, dim=-2)                            # 逐列归一化
+
+    if mode == "reference":
+        return tbn
+    if mode != "orthonormal":
+        raise ValueError(f"mode 只能是 'reference' 或 'orthonormal'，实际 {mode!r}")
+
+    # 以几何法线为准做 Gram-Schmidt：t 去掉法向分量后重新归一化，b = n × t
+    t_raw, n_raw = tbn[..., :, 0], tbn[..., :, 2]
+    t_orth = t_raw - (t_raw * n_raw).sum(-1, keepdim=True) * n_raw
+    t_orth = F.normalize(t_orth, dim=-1)
+    b_orth = torch.cross(n_raw, t_orth, dim=-1)
+    return torch.stack([t_orth, b_orth, n_raw], dim=-1)
 
 
 def compute_face_tbn_column_stacked(

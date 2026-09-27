@@ -59,30 +59,83 @@ def test_face_tbn_layout_is_column_basis() -> None:
     assert torch.allclose(normal, torch.tensor([0.0, 0.0, 1.0]), atol=1e-6), normal
 
 
-def test_face_tbn_bases_have_unit_norm() -> None:
-    """TBN 三列必须各自单位长。
+def test_face_tbn_bases_may_be_skewed() -> None:
+    """TBN 三列各自单位长，但 **tangent 与 bitangent 一般不正交**。
 
-    ⚠️ 只断言**逐列单位长**，不断言列间正交：参照实现是逐列 normalize，
-    而真实 UV 常带剪切，tangent/bitangent 并不正交（那是 UV 参数化的属性，
-    不是实现的 bug）。断言正交会写出一个恒失败的测试。
+    代数上 `normalize(t)·normalize(b) = −cos(∠A')`（A' 为 UV 三角形在顶点 a 处的内角），
+    两者正交当且仅当该角为直角。一般 UV 图不是正交参数化。
+
+    ⚠️ 本测试明确**不断言正交**：曾误把正交性当正确性判据（见 MIGRATION D 节）。
+    这里反过来固化"非正交是正常现象"，防止以后有人去"修"它。
     """
     from live3dgsavatar.core.deform.tbn import compute_face_tbn
 
-    torch.manual_seed(3)
-    verts = torch.randn(2, 11, 3, 3)
-    uvs = torch.rand(11, 3, 2)
-    tbn = compute_face_tbn(verts, uvs)                # [B, F, 3, 3]，列为基
+    # 用一个明显非直角的 UV 三角形：顶点 a 处 u 方向与 v 方向夹角 45°
+    verts = torch.tensor([[[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]]])
+    uvs = torch.tensor([[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]])   # a 处内角 45°
+    tbn = compute_face_tbn(verts, uvs)[0, 0]                      # [3, 3]，列为基
 
-    col_norms = tbn.norm(dim=-2)                      # [B, F, 3]
-    d = float((col_norms - 1.0).abs().max())
-    assert d < 1e-5, f"TBN 存在非单位列，max|Δ| = {d:.3e}"
+    # 逐列单位长
+    col_norms = tbn.norm(dim=0)
+    assert float((col_norms - 1.0).abs().max()) < 1e-5, f"列模长非 1：{col_norms}"
 
-    # 至少法线与三角面法线方向一致（正交性中唯一由几何保证的一条）
-    e1 = verts[..., 1, :] - verts[..., 0, :]
-    e2 = verts[..., 2, :] - verts[..., 0, :]
-    geo_normal = torch.nn.functional.normalize(torch.cross(e1, e2, dim=-1), dim=-1)
-    dot = (tbn[..., :, 2] * geo_normal).sum(dim=-1)
-    assert float((dot.abs() - 1.0).abs().max()) < 1e-5, "normal 与几何法线不平行"
+    # tangent 与 bitangent 应当**不正交**
+    cos_tb = float((tbn[:, 0] * tbn[:, 1]).sum())
+    assert abs(cos_tb) > 1e-3, (
+        f"本例 UV 在顶点 a 处内角为 45°，tangent/bitangent 不应正交，"
+        f"实测 cos = {cos_tb:.3e}")
+
+    # 理论值：cos = -cos(45°) = -0.7071
+    assert abs(cos_tb + 2 ** -0.5) < 1e-4, f"cos 应约等于 -0.7071，实测 {cos_tb:.6f}"
+
+    # 法线仍必须与几何法线平行（这条是由几何保证的）
+    e1 = verts[0, 0, 1] - verts[0, 0, 0]
+    e2 = verts[0, 0, 2] - verts[0, 0, 0]
+    geo_n = torch.nn.functional.normalize(torch.cross(e1, e2, dim=-1), dim=-1)
+    assert abs(float((tbn[:, 2] * geo_n).sum()) - 1.0) < 1e-5
+
+
+def test_face_tbn_orthonormal_mode_is_orthonormal() -> None:
+    """`mode="orthonormal"` 必须给出正交基，且保持法线与 tangent 所在平面。"""
+    from live3dgsavatar.core.deform.tbn import compute_face_tbn
+
+    torch.manual_seed(31)
+    verts = torch.randn(2, 9, 3, 3)
+    uvs = torch.rand(9, 3, 2)
+
+    ref_mode = compute_face_tbn(verts, uvs, mode="reference")
+    orth = compute_face_tbn(verts, uvs, mode="orthonormal")
+
+    # reference 模式大概率非正交
+    g_ref = ref_mode.transpose(-1, -2) @ ref_mode
+    dev_ref = float((g_ref - torch.eye(3)).abs().max())
+    assert dev_ref > 1e-3, "本例应存在 UV 剪切；若否则测试失去意义"
+
+    # orthonormal 模式必须正交
+    g_o = orth.transpose(-1, -2) @ orth
+    dev_o = float((g_o - torch.eye(3)).abs().max())
+    assert dev_o < 1e-5, f"orthonormal 模式不正交：max|RᵀR-I| = {dev_o:.3e}"
+
+    # 法线不变（以几何法线为准）
+    assert torch.allclose(orth[..., :, 2], ref_mode[..., :, 2], atol=1e-6)
+
+    # tangent 仍在原 tangent 与法线张成的平面内（只去掉法向分量）
+    n = ref_mode[..., :, 2]
+    t = ref_mode[..., :, 0]
+    t_plane = t - (t * n).sum(-1, keepdim=True) * n
+    t_plane = torch.nn.functional.normalize(t_plane, dim=-1)
+    assert torch.allclose(orth[..., :, 0], t_plane, atol=1e-5)
+
+
+def test_face_tbn_rejects_unknown_mode() -> None:
+    from live3dgsavatar.core.deform.tbn import compute_face_tbn
+
+    try:
+        compute_face_tbn(torch.randn(1, 1, 3, 3), torch.rand(1, 3, 2), mode="nope")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("未知 mode 应报错")
 
 
 # ------------------------------------------------------------------- blend --
@@ -275,3 +328,157 @@ def test_bind_batch_mismatch_is_loud() -> None:
         pass
     else:
         raise AssertionError("batch 不一致应报错")
+
+
+# --------------------------------------------------------------- 刚性等变 --
+
+
+def _nondegenerate_mesh(b: int = 1, side: int = 6, shear: float = 0.35):
+    """规则栅格三角剖分 + 带剪切的 UV，保证 TBN 非正交但可逆。"""
+    from live3dgsavatar.core.types import Mesh
+
+    v = side * side
+    idx = torch.arange(v).reshape(side, side)
+    tris = []
+    for i in range(side - 1):
+        for j in range(side - 1):
+            a, bb, c, d = idx[i, j], idx[i, j + 1], idx[i + 1, j], idx[i + 1, j + 1]
+            tris += [[a, bb, c], [bb, d, c]]
+    faces = torch.tensor(tris, dtype=torch.int32)
+
+    gx, gy = torch.meshgrid(torch.linspace(0, 1, side), torch.linspace(0, 1, side),
+                            indexing="ij")
+    # 带剪切的 UV：tangent 与 bitangent 不正交
+    uvs = torch.stack([(gx + shear * gy).reshape(-1),
+                       (gy + shear * gx).reshape(-1)], dim=-1)
+
+    torch.manual_seed(0)
+    verts = torch.randn(b, v, 3) * 0.1
+    return Mesh(verts=verts, faces=faces, uvs=uvs, uv_faces=faces)
+
+
+def test_binding_is_rigidly_equivariant() -> None:
+    """**核心正确性判据**：绑定必须关于刚体变换等变。
+
+    若模板做刚体变换 `T = (Q, t)`，则
+    `bind(T(M), x) == Q · bind(M, x) + t`。这条性质**不依赖任何参照实现**。
+
+    ⚠️ 它同时给出矩阵乘法顺序的判据。旋转矩阵满足 `R(QM) = Q·R(M)`（已验证），
+    于是：
+
+        R(QM)  · x = Q·(R(M)·x)        ← R·x 形式**严格等变**
+        R(QM)ᵀ · x ≠ Q·(R(M)ᵀ·x)      ← Rᵀ·x 形式仅在 R 正交时等变
+
+    真实网格的 TBN 一般**不正交**（UV 参数化带剪切），故 `Rᵀ·x` 不等变。
+    参照实现的 `mesh_binding` 用的正是 `Rᵀ·x`。见 docs/MIGRATION.md D 节。
+    """
+    from live3dgsavatar.core.deform.tbn import compute_face_tbn
+
+    mesh = _nondegenerate_mesh()
+    faces = mesh.faces
+    fid = torch.arange(4).repeat(mesh.num_faces // 4)[:mesh.num_faces] % mesh.num_faces
+    n = fid.numel()
+    # ⚠️ 重心必须**和为 1**：normalize 除的是 L2 范数，不能用它构造重心
+    raw = torch.rand(n, 3) + 0.1
+    bary = raw / raw.sum(dim=-1, keepdim=True)
+    assert float((bary.sum(-1) - 1).abs().max()) < 1e-6, "重心之和必须为 1"
+    xyz_tan = torch.randn(1, n, 3) * 0.01
+
+    def rotation_term(mesh_v, xyz, transpose: bool):
+        tbn = compute_face_tbn(mesh_v[:, faces], mesh.uvs[mesh.uv_faces])
+        r = tbn[:, fid]
+        m = r.transpose(-1, -2) if transpose else r
+        return torch.matmul(m, xyz.unsqueeze(-1)).squeeze(-1)
+
+    def offset_term(mesh_v):
+        tv = mesh_v[:, faces][:, fid]
+        return (tv * bary.unsqueeze(0).unsqueeze(-1)).sum(-2)
+
+    # 用例必须确实非正交，否则两种形式不可区分
+    tbn0 = compute_face_tbn(mesh.verts[:, faces], mesh.uvs[mesh.uv_faces])
+    shear = float((tbn0[0, 0].T @ tbn0[0, 0] - torch.eye(3)).abs().max())
+    assert shear > 1e-3, f"用例 TBN 近似正交（偏差 {shear:.2e}），无法区分乘法顺序"
+
+    torch.manual_seed(1)
+    Q, _ = torch.linalg.qr(torch.randn(3, 3))
+    if float(torch.det(Q)) < 0:
+        Q[:, 0] = -Q[:, 0]
+    t = torch.randn(3) * 0.05
+    mesh2 = mesh.verts @ Q.T + t
+
+    # TBN 的变换律（本测试的基石）
+    tbn2 = compute_face_tbn(mesh2[:, faces], mesh.uvs[mesh.uv_faces])
+    d_tbn = float((tbn2[0] - torch.einsum("ij,fjk->fik", Q, tbn0[0])).abs().max())
+    assert d_tbn < 1e-5, f"TBN 应满足 R(QM) = Q·R(M)，实测 max|Δ| = {d_tbn:.3e}"
+
+    # 旋转项：只有 R·x 等变
+    d_R = float((rotation_term(mesh2, xyz_tan, False)
+                 - rotation_term(mesh.verts, xyz_tan, False) @ Q.T).abs().max())
+    d_T = float((rotation_term(mesh2, xyz_tan, True)
+                 - rotation_term(mesh.verts, xyz_tan, True) @ Q.T).abs().max())
+    assert d_R < 1e-5, f"R·x 应严格等变，实测 max|Δ| = {d_R:.3e}"
+    assert d_T > 1e-3, (
+        f"Rᵀ·x 在非正交 TBN 下应不等变（这是关键结论），实测 max|Δ| = {d_T:.3e}；"
+        "若通过则说明用例失去了区分力")
+
+    # 位置项：重心组合必须等变（Σ bary = 1 是前提）
+    d_off = float((offset_term(mesh2) - (offset_term(mesh.verts) @ Q.T + t)).abs().max())
+    assert d_off < 1e-5, f"重心插值应等变，实测 max|Δ| = {d_off:.3e}"
+
+
+def test_orthonormal_mode_makes_transpose_equal_inverse() -> None:
+    """正交化的**真正**好处：`Rᵀ = R⁻¹`，从而 `Rᵀ·x` 这一写法重新成立。
+
+    ⚠️ 这里**不能**断言"`Rᵀ·x` 与 `R·x` 相等" —— 那是错的。
+    正交只给出 `Rᵀ = R⁻¹`；`Rᵀ` 与 `R` 本身一般不同（例如 90° 旋转阵，
+    反对称部分 ||Rᵀ−R|| ≈ 2，但它完全正交）。
+    曾把 `||Rᵀx − Rx||` 与 `||RᵀR−I||` 混为一谈，写出错误的不等式。
+    """
+    from live3dgsavatar.core.deform.tbn import compute_face_tbn
+
+    mesh = _nondegenerate_mesh()
+    faces = mesh.faces
+    xyz = torch.randn(1, 8, 3) * 0.01
+
+    T = compute_face_tbn(mesh.verts[:, faces], mesh.uvs[mesh.uv_faces],
+                         mode="orthonormal")
+    M = T[0, 0]
+
+    # 正交性
+    assert float((M.T @ M - torch.eye(3)).abs().max()) < 1e-5
+    assert abs(float(torch.det(M)) - 1.0) < 1e-4, "应仍是右手系（det = +1）"
+
+    # 关键性质：转置等于逆 —— 这才是 Rᵀ·x 成立的前提
+    d_inv = float((M.T - torch.linalg.inv(M)).abs().max())
+    assert d_inv < 1e-5, f"正交化后应满足 Rᵀ = R⁻¹，实测 max|Δ| = {d_inv:.3e}"
+
+    # 对照：reference 模式下 Rᵀ ≠ R⁻¹（这正是问题所在）
+    T_ref = compute_face_tbn(mesh.verts[:, faces], mesh.uvs[mesh.uv_faces],
+                             mode="reference")
+    M_ref = T_ref[0, 0]
+    d_ref = float((M_ref.T - torch.linalg.inv(M_ref)).abs().max())
+    assert d_ref > 1e-2, (
+        f"reference 模式下应明显有 Rᵀ ≠ R⁻¹，实测 {d_ref:.3e}；"
+        "若一致则说明用例的 UV 剪切不足")
+
+    # 并说明：正交化**不**意味着 Rᵀ·x == R·x
+    a = torch.matmul(T[:, :8].transpose(-1, -2), xyz.unsqueeze(-1)).squeeze(-1)
+    b = torch.matmul(T[:, :8], xyz.unsqueeze(-1)).squeeze(-1)
+    assert float((a - b).abs().max()) > 1e-3, (
+        "Rᵀ 与 R 一般不同；若相等说明该面恰好对称，用例不具代表性")
+
+
+def test_normalize_is_not_a_barycentric_constructor() -> None:
+    """**回归测试**：`F.normalize` 除的是 L2 范数，不是求和。
+
+    曾用它构造重心坐标，导致 `Σ bary != 1`，进而让等变性测试假失败。
+    本测试把这个坑固定下来。
+    """
+    raw = torch.tensor([[1.0, 2.0, 3.0]])
+    wrong = torch.nn.functional.normalize(raw, dim=-1)
+    right = raw / raw.sum(dim=-1, keepdim=True)
+
+    assert abs(float(wrong.sum()) - 1.0) > 0.1, "F.normalize 不应给出和为 1 的结果"
+    assert abs(float(right.sum()) - 1.0) < 1e-6
+    assert torch.allclose(wrong.norm(dim=-1), torch.ones(1), atol=1e-6), \
+        "F.normalize 保证 L2 范数为 1"

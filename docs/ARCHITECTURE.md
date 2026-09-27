@@ -599,12 +599,14 @@ class Session:
 | 交付物 | 状态 |
 |---|---|
 | `docs/CONVENTIONS.md` | ✅ 坐标/矩阵/空间/精度约定 |
-| `docs/MIGRATION.md` | ✅ 4 项缺陷修复 + 6 项有意偏离登记 |
+| `docs/MIGRATION.md` | ✅ 4 项缺陷修复 + 6 项有意偏离登记 + 1 项未解决偏差 |
+| `docs/CORE_GUIDE.md` | ✅ 代码导览：形状流转、设计原因、陷阱清单、"验证 X 跑哪条命令" |
 | `core/types.py` · `core/avatar.py` · `core/io/ply.py` | ✅ 类型契约、参数容器、PLY 互操作 |
 | `core/deform/{tbn,bind,blend,binding}.py` | ✅ TBN / 绑定 / 混合 / UV 绑定构建 |
 | `core/render/{camera_utils,rasterizer}.py` | ✅ 矩阵边界 + 两个光栅化后端 |
 | `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**35 项**，全部无需 GPU（含架构一致性检查） |
-| `tests/equivalence/` · `scripts/equivalence_check.py` | ✅ 已交付；⏳ 需 GPU 执行才产生门禁结论 |
+| `tests/equivalence/` · `scripts/equivalence_check.py` | ✅ 已交付并执行；发现绑定层 `xyz` 偏差（见 MIGRATION D 节） |
+| `scripts/diagnose_binding.py` | ✅ 绑定层**原理性验证**（运动学不变量，不以参照为判据） |
 
 ### 9.2 分层规则的可执行化
 

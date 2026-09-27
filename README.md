@@ -41,7 +41,7 @@
 一键脚本会创建独立 conda 环境并编译本地 CUDA 扩展：
 
 ```bash
-git clone <this-repo> && cd Live3DGSAvatar
+git clone https://github.com/CherryRH/Live-3DGS-Avatar && cd Live3DGSAvatar
 bash scripts/setup_env.sh
 conda activate live3dgs
 ```

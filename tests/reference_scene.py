@@ -19,6 +19,10 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+# ⚠️ 必须在**导入 FLAME 之前**打补丁（`FLAME.__init__` 里 pickle.load → import chumpy）。
+#    `live3dgsavatar/__init__.py` 导入即施加 numpy 兼容补丁。
+import live3dgsavatar  # noqa: E402, F401  （勿删：导入即生效）
+
 DEFAULT_DATA = Path("/home/crh/Datasets/INSTA/duda")
 DEFAULT_PLY = Path("/home/crh/Projects/RGBAvatar/output/duda/test/model.ply")
 
@@ -40,6 +44,14 @@ class Scene:
     @property
     def num_frames(self) -> int:
         return len(self.frames)
+
+    def frames_tensor(self, idx: list[int], device: str = "cuda"):
+        """按索引取网格顶点，堆成 `[B, V, 3]`。"""
+        return torch.stack([self.frames[i]["mesh"] for i in idx]).to(device)
+
+    def weights_tensor(self, idx: list[int], device: str = "cuda"):
+        """按索引取驱动参数，堆成 `[B, D]`。"""
+        return torch.stack([self.frames[i]["blend_weight"] for i in idx]).to(device)
 
 
 def load_scene(

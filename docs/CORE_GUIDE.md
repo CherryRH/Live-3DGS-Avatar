@@ -198,8 +198,10 @@ weights [B,K]  ×  base [N,·] + Σ_k weights[:,k] · basis[k] [K,N,·]
 | 分层依赖规则没被破坏 | `tests/unit/test_architecture.py` | 否 |
 | 与参照实现逐层等价 | `scripts/equivalence_check.py` | **是** |
 | **绑定层的原理性不变量**（刚性等变等） | `tests/unit/test_deform.py` | 否 |
-| 用 core 渲染出图 + 与参照逐帧对比 | `scripts/render_core.py` | **是** |
-| core 渲染链路的形状/约定 | `scripts/render_core.py --dry-run` | 否 |
+| core 渲染 vs 参照 vs 数据集原图 | `scripts/render_test.py` | **是** |
+| 批大小对耗时的实际影响 | `scripts/render_test.py --sweep-batch 1 4 10` | **是** |
+| 渲染链路的形状/约定 + 指标函数 + 参数校验 + 摘要打印 | `scripts/render_test.py --dry-run` | 否 |
+| 全项目无未定义名字（含 GPU-only 分支） | `tests/unit/test_architecture.py` | 否 |
 | 参照管线的性能基线 | `output/smoke/baseline.json` | 已采集 |
 
 全部不需要 GPU 的测试：
@@ -225,7 +227,9 @@ python tests/run_tests.py            # 零依赖，未装 pytest 也能跑
   duda 模型暂无此现象，但 781/10032 个面的 UV 面积 < 1e-6，属潜在风险（MIGRATION O2）。
 - **`face_id` 越界/负值** 已加校验：负索引会被 PyTorch 当作"从末尾数"静默取错面。
 - **FLAME 的 dtype 不得覆盖**（float64 是刻意的），否则 `Double/Float` 混算报错
-  （见 `ENVIRONMENT.md` §3.10）。
+  （见 `ENVIRONMENT.md` §3.11）。
+- **加载参照实现前必须在模块层 `import live3dgsavatar`**，否则 chumpy 会因 numpy
+  别名缺失而 `ImportError`（见 `ENVIRONMENT.md` §3.10）。
 
 ## 7. 建议的阅读顺序
 

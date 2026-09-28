@@ -188,10 +188,7 @@ $(printf '\033[1;32m')环境就绪$(printf '\033[0m')
   激活：
       conda activate $ACTIVATE_TARGET
 
-  GPU 冒烟测试（需可用的 NVIDIA GPU）：
-      python scripts/smoke_test.py \\
-          --ply  /home/crh/Projects/RGBAvatar/output/duda/test/model.ply \\
-          --data /home/crh/Datasets/INSTA/duda \\
-          --frames 3 --out output/smoke
+  GPU 渲染测试（需可用的 NVIDIA GPU）：
+      python scripts/render_test.py --frames 20
 
 EOF

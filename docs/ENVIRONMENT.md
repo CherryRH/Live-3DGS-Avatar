@@ -42,10 +42,7 @@ conda activate $PWD/.conda/envs/live3dgs
 python scripts/env_check.py
 
 # 3) GPU 冒烟测试 + 基线性能采集
-python scripts/smoke_test.py \
-    --ply  /home/crh/Projects/RGBAvatar/output/duda/test/model.ply \
-    --data /home/crh/Datasets/INSTA/duda \
-    --frames 3 --out output/smoke
+python scripts/render_test.py --frames 20
 ```
 
 `setup_env.sh` 是幂等的：重复执行会跳过已完成步骤；`FORCE=1` 可强制重建。
@@ -152,7 +149,7 @@ pip install -r requirements.txt
 本项目选择修 chumpy 侧，因为它是**唯一不依赖外部索引状态**的做法，也不会因镜像同步策略变化而再次失效。
 
 **遗留限制**：参照仓库 `RGBAvatar/` 的脚本不导入本包，因此在那边直接跑脚本需自行应用同一补丁
-（`scripts/smoke_test.py` 已通过 `apply_compat()` 处理）。
+（`scripts/render_test.py` 经由 `tests/reference_scene.py` 加载参照实现，补丁已生效）。
 
 **可移除条件**：chumpy 上游发布兼容 numpy 2.x 的版本后，删除该补丁并恢复 numpy pin。
 
@@ -202,7 +199,29 @@ pip install chumpy --no-build-isolation
 
 ---
 
-## 3.10 FLAME 的 dtype 不得覆盖（float64 是刻意的）
+## 3.10 兼容补丁必须在导入 chumpy **之前**生效
+
+chumpy 0.70 依赖 numpy 已移除的别名（`np.int` / `np.float` / `np.object` …），
+故 `src/live3dgsavatar/compat/__init__.py` 在**导入期**补齐这些别名。
+补丁由 `live3dgsavatar/__init__.py` 触发（它 `import compat`）。
+
+**因此凡是会加载参照实现的脚本/模块，都必须在「模块层」先
+`import live3dgsavatar`。** 参照侧的 `FLAME.__init__` 会 `pickle.load` 进而
+`import chumpy`，一旦顺序反了就会报：
+
+```
+ImportError: cannot import name 'int' from 'numpy'
+```
+
+`scripts/render_test.py` 与 `tests/reference_scene.py` 都已在模块层显式触发；
+由 `tests/unit/test_architecture.py::test_scripts_trigger_compat_before_chumpy`
+静态兜住（该测试已验证：移除那行 import 会立即失败）。
+
+> 另一个坑：`import live3dgsavatar` 必须放在 `sys.path.insert(..., src)` **之后**。
+
+---
+
+## 3.11 FLAME 的 dtype 不得覆盖（float64 是刻意的）
 
 `FLAMEDataset` 把姿态/形状参数存为 **float64**，而 `FLAME` 的 `v_template` / `shapedirs`
 跟随 `FlameConfig.dtype`。若把 dtype 改成 float32，会在
@@ -243,10 +262,7 @@ python scripts/env_check.py --strict   # 有警告即返回 1（CI 用）
 
 ```bash
 conda activate live3dgs
-python scripts/smoke_test.py \
-    --ply  /home/crh/Projects/RGBAvatar/output/duda/test/model.ply \
-    --data /home/crh/Datasets/INSTA/duda \
-    --frames 3 --out output/smoke
+python scripts/render_test.py --frames 20
 ```
 
 产出：`output/smoke/*.png` + `baseline.json`（单帧耗时 / FPS / 峰值显存）。
@@ -269,7 +285,7 @@ python scripts/smoke_test.py \
 | `pip install ~/Libraries/fused-ssim` | `pip install submodules/fused-ssim` | 摆脱工作区外路径依赖 |
 | `pip install -r requirements.txt`（RGBAvatar 版） | 本仓库 `requirements.txt`（已补全） | 官方清单缺 `Pillow`、`chumpy`、`scipy` 等实测必需项 |
 | `pip install submodules/diff-gaussian-rasterization` | `pip install -e submodules/diff-gaussian-rasterization` | editable 便于追踪编译产物 |
-| 无 | `scripts/setup_env.sh` + `scripts/env_check.py` + `scripts/smoke_test.py` | 一条命令可复现 + 可自检 + 可采集基线 |
+| 无 | `scripts/setup_env.sh` + `scripts/env_check.py` + `scripts/render_test.py` | 一条命令可复现 + 可自检 + 可出渲染报告 |
 | 环境名 `rgbavatar` | 环境名 `live3dgs` | 独立环境，避免与参照仓库互相污染 |
 
 **保留原样的部分**：`TORCH_CUDA_ARCH_LIST=8.6`、`MAX_JOBS/NVCC_THREADS` 限流、`--no-build-isolation`。这些是实测有效的关键设置。
@@ -279,7 +295,7 @@ python scripts/smoke_test.py \
 ## 6. 验证记录
 
 `scripts/setup_env.sh` 在第 6、7 步会自行校验扩展算子与运行完整自检，无需手工记录。
-留档的性能基线由 `scripts/smoke_test.py` 写入 `output/smoke/baseline.json`。
+渲染与性能报告由 `scripts/render_test.py` 写入 `output/render_test/report.json`。
 
 ---
 
@@ -309,7 +325,7 @@ python scripts/smoke_test.py \
 |---|---|
 | `scripts/setup_env.sh` | 一键建环境（幂等） |
 | `scripts/env_check.py` | 环境自检（无 GPU 可跑） |
-| `scripts/smoke_test.py` | GPU 冒烟 + 基线性能采集 |
+| `scripts/render_test.py` | 统一渲染测试（core / 参照 / 数据集原图 三方对比） |
 | `requirements.txt` | Python 依赖（版本来自实测环境） |
 | `submodules/ATTRIBUTION.md` | vendored 源码的来源、许可与差异 |
 | `src/live3dgsavatar/compat/__init__.py` | 第三方兼容性补丁（numpy 2.x 别名，见 §3.6） |

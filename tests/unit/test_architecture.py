@@ -188,3 +188,92 @@ def test_flame_dtype_is_not_overridden() -> None:
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
     assert not offenders, (
         "不得覆盖 FLAME 的 dtype（会导致 Double/Float 混算）：\n  " + "\n  ".join(offenders))
+
+
+def test_scripts_trigger_compat_before_chumpy() -> None:
+    """**回归测试**：会加载参照实现的模块必须在**模块层**先触发 numpy 兼容补丁。
+
+    参照侧的 `FLAME.__init__` 会 `pickle.load` 进而 `import chumpy`，
+    而 chumpy 0.70 依赖 numpy 已移除的别名（`np.int` 等）。
+    补丁由 `import live3dgsavatar` 在导入期施加（`live3dgsavatar/__init__.py`
+    会 import `compat`）。
+
+    若把 `import live3dgsavatar` 放进函数体（例如晚于 `load_scene()` 才执行），
+    顺序就反了，会报 `cannot import name 'int' from 'numpy'`。
+    `scripts/render_test.py` 曾因此报错。
+    """
+    targets = [REPO_ROOT / "scripts" / "render_test.py",
+               REPO_ROOT / "tests" / "reference_scene.py"]
+    for path in targets:
+        assert path.exists(), f"缺少文件：{path}"
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+        top_level_import = any(
+            (isinstance(n, ast.Import) and any(a.name == "live3dgsavatar" for a in n.names))
+            or (isinstance(n, ast.ImportFrom) and n.module == "live3dgsavatar")
+            for n in tree.body
+        )
+        assert top_level_import, (
+            f"{path.name} 必须在模块层 `import live3dgsavatar` 以触发 numpy 兼容补丁；"
+            "否则参照侧的 FLAME 构造会因 chumpy 而 ImportError")
+
+
+def test_no_undefined_names_across_project() -> None:
+    """**静态检查**：全项目不得有未定义名字。
+
+    `python -m py_compile` 只查语法，查不出「某个分支用了未赋值的变量」；
+    而 `--dry-run` 只覆盖部分代码路径。`build_reference` 那种只在 GPU 上跑的
+    分支，若引用了未定义变量，会在**用户执行时**才炸（曾如此：
+    `_print_summary` 里的 `c` / `r` 未定义，`--sweep-batch` 用 `nargs="*"` 拿到空列表）。
+
+    这里用 AST 收集模块级绑定、用 `symtable` 做词法/闭包解析，二者结合定位。
+    """
+    import ast
+    import builtins
+    import symtable
+
+    def module_bindings(tree) -> set[str]:
+        names: set[str] = set()
+        for n in ast.walk(tree):
+            if isinstance(n, (ast.Import, ast.ImportFrom)):
+                for a in n.names:
+                    names.add((a.asname or a.name).split(".")[0])
+            elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                names.add(n.id)
+            elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(n.name)
+            elif isinstance(n, ast.arg):
+                names.add(n.arg)
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                names.add(n.name)
+        return names
+
+    files = (list((REPO_ROOT / "src").rglob("*.py"))
+             + list((REPO_ROOT / "tests").rglob("*.py"))
+             + list((REPO_ROOT / "scripts").glob("*.py")))
+
+    problems: list[str] = []
+    for path in sorted(files):
+        if "__pycache__" in str(path):
+            continue
+        src = path.read_text(encoding="utf-8")
+        mod = module_bindings(ast.parse(src, filename=str(path)))
+        table = symtable.symtable(src, str(path), "exec")
+
+        def walk(t):
+            for sym in t.get_symbols():
+                name = sym.get_name()
+                if (not sym.is_referenced() or sym.is_assigned()
+                        or sym.is_parameter() or sym.is_imported() or sym.is_local()):
+                    continue
+                if name in mod or hasattr(builtins, name) or name == "__file__":
+                    continue
+                problems.append(
+                    f"{path.relative_to(REPO_ROOT)}:{t.get_lineno()} "
+                    f"[{t.get_name()}] 未定义 {name!r}")
+            for child in t.get_children():
+                walk(child)
+
+        walk(table)
+
+    assert not problems, "存在未定义名字：\n  " + "\n  ".join(problems)

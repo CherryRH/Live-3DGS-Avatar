@@ -16,8 +16,8 @@
 1. 本项目等价门曾在位置项报差 **9.87e-02** —— 当时本项目用 `Rᵀ`，
    而参照 `gaussian_deform_batch` 产出 `R·x`（`binding_rotations @ gs.xyz`）：
    `‖Rᵀ − R‖` 在非正交 `R` 下正是该量级；
-2. 改为 `R·x` 后，`scripts/render_core.py` 与 `smoke_test.py`
-   （参照实现）的 254 帧渲染 **PSNR 中位 101 dB、max|Δ| = 1/255** —— 逐位一致。
+2. 改为 `R·x` 后，`scripts/render_test.py` 中 core 与参照的 254 帧渲染
+   **PSNR 中位 101 dB、max|Δ| = 1/255** —— 逐位一致。
 
 **易混淆点**：CUDA `face_tbn.cu` 内部 `TBNs[idx] = transpose(mat3(t,b,n))`
 （**行**为基），而 `cuda_utils` 之外、Python 侧的 `utils.compute_face_tbn` 与

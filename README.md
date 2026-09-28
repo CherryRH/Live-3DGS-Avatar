@@ -69,13 +69,19 @@ data/FLAME2020/generic_model.pkl     # FLAME 模板（需自行从官网获取�
 ## 使用
 
 ```bash
-# 用本项目渲染管线出图（输出到 output/<subject>/<work_name>/render_image/）
-python scripts/render_core.py --frames 3
+# 统一渲染测试：core vs 参照实现 vs 数据集原图（PSNR / FPS / 显存）
+python scripts/render_test.py --frames 20
 
-# 全量渲染并与参照实现的基线逐帧对比
-python scripts/render_core.py --frames -1 --compare-ref output/smoke
+# 全量 + 并排对比图（两边同批大小）
+python scripts/render_test.py --frames -1 --batch-size 4 --dump-diff
 
-# 数值等价验收门（分层比对参照实现）
+# 量化批大小本身的影响（参照内部是串行循环，理论上每帧成本不变）
+python scripts/render_test.py --frames 20 --batch-size 4 --sweep-batch 1 4 10
+
+# 只测 core（跳过参照实现，更快）
+python scripts/render_test.py --frames 20 --skip-reference
+
+# 数值等价验收门（与参照逐层比对）
 python scripts/equivalence_check.py \
     --ply <PATH>/model.ply --data <DATA_DIR> --frames 3
 ```
@@ -98,7 +104,7 @@ python scripts/equivalence_check.py \
 src/           项目源码（core/ 已完成；data/training/runtime 为后续阶段）
 scripts/       环境搭建、自检、等价门、渲染出图
 submodules/    本地 CUDA 扩展与第三方源码（vendored）
-tests/         单元测试（45 项，无需 GPU）与数值等价门
+tests/         单元测试（48 项，无需 GPU）与数值等价门
 docs/          架构 / 导览 / 约定 / 差异 / 环境
 data/          输入资产（不入库）
 output/        渲染与训练产物（不入库）

@@ -158,7 +158,7 @@ rot_world  = q(R) ⊗ rot_tangent            # 四元数左乘，WXYZ
 >
 > 1. 等价门在位置项曾报差 **9.87e-02**（当时本项目用 `Rᵀ`）；
 > 2. 定为 `R` 后，位置差降到 **2.98e-08**、渲染 **PSNR 133 dB**；
-> 3. `scripts/render_core.py` 与参照（`smoke_test.py`）的 254 帧
+> 3. `scripts/render_test.py` 中 core 与参照的 254 帧
 >    渲染 **PSNR 中位 101 dB、`max|Δ| = 1/255`** —— 逐位一致。
 >
 > 结论：**本项目与参照在这一点上完全一致，不存在"有意偏离"。**

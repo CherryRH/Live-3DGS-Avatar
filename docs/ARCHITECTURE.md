@@ -180,21 +180,19 @@ Live3DGSAvatar/
 │   ├── run_tests.py             # 零依赖测试运行器（未装 pytest 也能跑）
 │   ├── support.py               # 参照加载与比较工具
 │   ├── reference_scene.py       # 参照侧几何/相机适配（脚本用，不属 core）
-│   ├── unit/                    # 单测（45 项，全部无需 GPU）
+│   ├── unit/                    # 单测（48 项，全部无需 GPU）
 │   └── equivalence/             # 数值等价门（stages.py + GPU 测试）
 ├── scripts/
 │   ├── setup_env.sh             # 一键建环境（幂等）—— P0
 │   ├── env_check.py             # 环境自检（无 GPU 可跑）—— P0
-│   ├── smoke_test.py            # 参照实现的 GPU 冒烟 + 性能基线 —— P0
-│   ├── equivalence_check.py     # 数值等价验收门（分层比对）—— P1
-│   ├── render_core.py           # 用 core/ 渲染出图 + 与参照对比 —— P1
+│   ├── render_test.py           # 统一渲染测试：core vs 参照 vs 数据集原图 —— P1
+│   ├── equivalence_check.py     # 数值等价验收门（与参照逐层比对）—— P1
 │   └── _compat_shim.py          # 独立脚本用的精简兼容补丁
 ├── data/                        # 输入资产（gitignore）
 │   └── FLAME2020/               # generic_model.pkl / flame_uv.npz / eyelid
 ├── output/                      # 产物（gitignore）
-│   ├── smoke/                   #   smoke_test.py 的输出 + baseline.json
 │   ├── equivalence/             #   equivalence_check.py 的输出
-│   └── <subject>/<work_name>/   #   render_core.py 的输出 + render_core.json
+│   └── render_test/             #   render_test.py 的输出 + report.json
 ├── requirements.txt
 └── README.md
 ```
@@ -372,7 +370,7 @@ class Session:
 | eyelid | `data/FLAME2020/{l,r}_eyelid.npy` | ✅ 已有 |
 | 预训练模型（参照） | `RGBAvatar/output/duda/test/model.ply` | ✅ 只读参照 |
 | 数据集 | `/home/crh/Datasets/INSTA/duda`（254 帧） | ✅ 已有 |
-| 基线产物 | `output/smoke/`（由 `scripts/smoke_test.py` 生成） | ⏳ 待 GPU 运行 |
+| 渲染测试产物 | `output/render_test/`（由 `scripts/render_test.py` 生成） | ✅ |
 
 > **`data/checkpoints` 不需要**：RGBAvatar 的数据集契约只有"多个 subject/work 下的 `checkpoint/` + `images/`"，
 > 而这两者都在数据集目录内（`<DATA_DIR>/<SUBJECT>/{checkpoint,images}`）。本项目训练产出的
@@ -405,9 +403,9 @@ class Session:
 | `core/types.py` · `core/avatar.py` · `core/io/ply.py` | ✅ 类型契约、参数容器、PLY 互操作 |
 | `core/deform/{tbn,bind,blend,binding}.py` | ✅ TBN / 绑定 / 混合 / UV 绑定构建 |
 | `core/render/{camera_utils,rasterizer}.py` | ✅ 矩阵边界 + 两个光栅化后端 |
-| `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**45 项**，全部无需 GPU |
+| `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**48 项**，全部无需 GPU |
 | `tests/equivalence/` · `scripts/equivalence_check.py` | ✅ 等价门（分层比对 + 前置检查） |
-| `scripts/render_core.py` | ✅ 用 `core/` 渲染出图 + 与参照逐帧对比（含 CPU dry-run） |
+| `scripts/render_test.py` | ✅ 统一渲染测试：core vs 参照 vs 数据集原图（含 CPU dry-run） |
 
 ### 9.2 P1 验收证据（已通过）
 
@@ -421,7 +419,7 @@ class Session:
 | 绑定（5 项） | `xyz` **2.98e-08**、`rotation` 6.6e-07，其余逐位一致 |
 | 渲染（4 项） | `color` **PSNR 133.47 dB**、`alpha` 135.48 dB |
 
-**② 逐帧渲染复现** —— `python scripts/render_core.py --frames -1 --compare-ref output/smoke`：
+**② 逐帧渲染复现** —— `python scripts/render_test.py --frames -1`：
 
 | 指标 | 结果 |
 |---|---|
@@ -432,7 +430,7 @@ class Session:
 | 峰值显存 | 106 MiB |
 | 参照基线 | 6.94 ms/帧（144 FPS）·峰值 1648 MiB（batch=10 预分配） |
 
-**③ 单元测试** —— `python tests/run_tests.py`：**45 通过 / 0 失败 / 1 跳过**（跳过项为需 GPU 的等价测试）。
+**③ 单元测试** —— `python tests/run_tests.py`：**48 通过 / 0 失败 / 1 跳过**（跳过项为需 GPU 的等价测试）。
 
 > **性能说明**：89 FPS vs 参照 144 FPS 的差距来自 `deform` 走纯 PyTorch
 > （`linear_blending` 默认不用 CUDA 内核、TBN 每帧全量重算）。这是**有意识的取舍**：
@@ -449,9 +447,11 @@ class Session:
 | CUDA 隔离 | `diff_gaussian_rasterization` 只允许在 `core/render/rasterizer.py` 与 `core/deform/blend.py` 出现 |
 | 无 I/O | `core/` 不得 import `argparse` / `sys`；`plyfile` / `json` 仅限 `core/io/ply.py` |
 | 导入期无设备访问 | `core/` 模块作用域不得调用 `torch.cuda.*`（否则无 GPU 环境下导入即失败） |
-| FLAME dtype | 不得覆盖 `FlameConfig.dtype`（float64 是刻意的，见 `ENVIRONMENT.md` §3.10） |
+| 无未定义名字 | 全项目静态检查（AST 模块绑定 + `symtable` 词法/闭包解析），覆盖只在 GPU 上跑的分支 |
+| 兼容补丁顺序 | 加载参照实现的模块必须在模块层 `import live3dgsavatar`（否则 chumpy ImportError，见 `ENVIRONMENT.md` §3.10） |
+| FLAME dtype | 不得覆盖 `FlameConfig.dtype`（float64 是刻意的，见 `ENVIRONMENT.md` §3.11） |
 
-**「导入 `core` 不需要 GPU」** 这一性质尤其重要：CPU 侧的 45 项测试才得以成立。
+**「导入 `core` 不需要 GPU」** 这一性质尤其重要：CPU 侧的 48 项测试才得以成立。
 
 ### 9.4 等价门的执行结构
 

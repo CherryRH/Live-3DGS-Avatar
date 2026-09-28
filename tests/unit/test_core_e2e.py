@@ -20,12 +20,16 @@ ATOL = 1e-5
 # ------------------------------------------------------------ 共用构造 ----
 
 
-def _tiny_mesh(b: int = 1, v: int = 9, f: int = 8):
-    """构造一个拓扑合法的小网格（顶点落在球面上，避免退化面）。"""
+def _tiny_mesh(b: int = 1, v: int = 9, f: int = 8, verts: torch.Tensor | None = None):
+    """构造一个拓扑合法的小网格（顶点落在球面上，避免退化面）。
+
+    `verts` 可覆盖自动生成的顶点（用于取同一批网格的某一帧切片）。
+    """
     from live3dgsavatar.core.types import Mesh
 
-    torch.manual_seed(21)
-    verts = torch.nn.functional.normalize(torch.randn(b, v, 3), dim=-1)
+    if verts is None:
+        torch.manual_seed(21)
+        verts = torch.nn.functional.normalize(torch.randn(b, v, 3), dim=-1)
     # 面：循环三元组，索引都在 [0, v)
     faces = torch.tensor([[i % v, (i + 1) % v, (i + 3) % v] for i in range(f)],
                          dtype=torch.int32)
@@ -304,3 +308,42 @@ def test_binding_validation_rejects_bad_shapes() -> None:
         pass
     else:
         raise AssertionError("多阶 SH 应被拒绝（本项目 sh_degree=0）")
+
+
+def test_batched_deform_equals_per_frame_deform() -> None:
+    """**回归测试**：批量 deform 必须与逐帧 deform 数值等价。
+
+    `scripts/render_test.py` 为与参照对齐批大小而走批量路径；
+    若批量与逐帧有差异，性能对比就失去意义（比的可能不是同一件事）。
+
+    ⚠️ 逐帧的网格**直接切自批网格**（`verts` / `faces` / `uvs` 全部取自同一份），
+    不能各自调 `_tiny_mesh` —— 那样 `uvs` 会因 RNG 状态不同而不同，
+    导致测的其实是`不同的 UV 参数化`，而不是批量与逐帧的差异（曾误判为产品 bug）。
+    """
+    from live3dgsavatar.core.types import Mesh
+
+    avatar = _tiny_avatar()
+    b = 3
+    mesh = _tiny_mesh(b=b)
+    bw = torch.randn(b, avatar.config.num_basis_in)
+
+    def frame_mesh(i: int) -> Mesh:
+        return Mesh(verts=mesh.verts[i:i + 1], faces=mesh.faces,
+                    uvs=mesh.uvs, uv_faces=mesh.uv_faces)
+
+    with torch.no_grad():
+        batched = avatar.deform(mesh, bw)
+        singles = [avatar.deform(frame_mesh(i), bw[i:i + 1]) for i in range(b)]
+
+    assert batched.xyz.shape == (b, avatar.num_gaussians, 3)
+    for i in range(b):
+        for name in ("xyz", "rotation", "color", "opacity", "scaling"):
+            a = getattr(batched, name)[i]
+            c = getattr(singles[i], name)[0]
+            d = float((a - c).abs().max())
+            assert d < 1e-5, (
+                f"批量与逐帧在第 {i} 帧的 {name} 不一致：max|Δ| = {d:.3e}")
+
+    # 用例必须真的在跑多个不同的帧，否则测不出批量维度的问题
+    spread = max(float((mesh.verts[i] - mesh.verts[0]).abs().max()) for i in range(b))
+    assert spread > 1e-3, "各帧网格应不同，否则用例失去意义"

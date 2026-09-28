@@ -1,7 +1,7 @@
 """共享兼容性补丁 —— 供 scripts/ 下的独立脚本使用。
 
 **权威实现在 `src/live3dgsavatar/compat/__init__.py`**，本文件是它的精简副本：
-`env_check.py` 与 `smoke_test.py` 必须在「未安装本项目、未设置 PYTHONPATH」的
+`env_check.py` 与 `render_test.py` 必须在「未安装本项目、未设置 PYTHONPATH」的
 条件下也能运行，因此不能依赖 `src/`。
 
 ⚠️ 修改 `src/live3dgsavatar/compat/__init__.py` 中的补丁列表时，必须同步修改本文件

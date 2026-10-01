@@ -18,7 +18,7 @@
 |---|---|---|---|
 | **K1** | `BindingModel.clone()` 调用 5 个参数，`__init__` 只收 3 个 → 死代码 | 不移植；快照改用 `state_dict()` | — |
 | **K2** | `save_ply()` 读取未定义的 `self.binding_face_id` → 任何模型都保存失败 | 绑定信息归属 `GaussianAvatar`（`register_buffer`） | `test_ply.py` |
-| **K3** | `load_ply()` 从**配置**读基数量而非文件列数 → 配置与文件不一致时静默读错列 | PLY 头写入 `comment gaussian_config` 自描述；加载时与文件列数交叉校验 | `test_load_rejects_basis_count_mismatch` |
+| **K3** | `load_ply()` 从**配置**读基数量而非文件列数 → 配置与文件不一致时静默读错列 | 加载时与**文件列数**交叉校验（K / D / `tex_size²` 容量），不一致即报错；本项目写出的 PLY 另含 `comment gaussian_config` 自描述 | `test_load_rejects_basis_count_mismatch`、`test_load_rejects_tex_size_too_small_for_gaussians` |
 | **K4** | `weight_module` 压进单列，仅有 `assert` 保护容量 | 改为显式 `ValueError`，并给出所需 `tex_size` 下界 | `test_save_rejects_weight_module_larger_than_gaussians` |
 
 ---

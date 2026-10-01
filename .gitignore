@@ -25,6 +25,10 @@ data/*
 output/*
 !output/.gitkeep
 
+# ---- 模型（单个 .ply 约 60MB，不入库；照 README 从 RGBAvatar 复制）----
+models/*
+!models/.gitkeep
+
 # ---- vendored 源码中的非必要内容 ----
 submodules/diff-gaussian-rasterization/third_party/glm/manual.md
 submodules/*/.git/

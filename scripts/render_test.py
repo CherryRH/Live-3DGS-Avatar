@@ -57,7 +57,25 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 #    若等 `main()` 里才 import 本项目，顺序就反了（曾因此报
 #    `cannot import name 'int' from 'numpy'`）。
 import live3dgsavatar  # noqa: E402, F401  （勿删：导入即生效）
-from live3dgsavatar.config import Config, load_config  # noqa: E402
+from live3dgsavatar.config import (  # noqa: E402
+    Config, load_config, reference_model_dir, resolve_model_ply)
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """把 RGBAvatar 风格的下划线参数名归一化成本项目的短横线写法。
+
+    参照实现的 CLI 用 `--work_name`（见 `RGBAvatar/render.py`），
+    本项目统一用 `--work-name`。为了让两边的命令可以直接互相复制，
+    这里把 `--a_b` 归一化为 `--a-b`，**两种写法都接受**。
+    """
+    out = []
+    for token in argv:
+        if token.startswith("--") and "_" in token:
+            name, sep, value = token.partition("=")
+            if name.count("-") == 2 and "_" in name:      # 形如 --work_name
+                token = name.replace("_", "-") + (sep + value if sep else "")
+        out.append(token)
+    return out
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,7 +90,10 @@ def parse_args() -> argparse.Namespace:
                "用 python scripts/show_config.py 查看实际生效值。")
     p.add_argument("--config-dir", type=Path, default=None,
                    help="配置目录；默认仓库根的 configs/")
-    p.add_argument("--subject", default=None, help="数据集主体名，覆盖配置的 subject")
+    p.add_argument("--subject", default=None,
+                   help="人物名 / 数据集主体名，同时也是模型的一级目录名（默认 configs/system.yaml 的 subject）")
+    p.add_argument("--work-name", default=None,
+                   help="工作名（默认 configs/system.yaml 的 work_name，如 test）")
     p.add_argument("--output-dir", type=Path, default=None,
                    help="产物根目录；默认 <paths.output_dir>/render_test")
     p.add_argument("--data-root", type=Path, default=None,
@@ -101,7 +122,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--skip-reference", action="store_true",
                    help="只测 core vs dataset（不加载参照实现）")
     p.add_argument("--dry-run", action="store_true", help="CPU 自检，不访问数据集/GPU")
-    return p.parse_args()
+    return p.parse_args(_normalize_argv(sys.argv[1:]))
 
 
 def _validate(args: argparse.Namespace) -> None:
@@ -130,6 +151,8 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     # 命令行 → 配置（None 表示用户没传，保留配置值）
     if args.subject is not None:
         cfg.set("subject", args.subject)
+    if args.work_name is not None:
+        cfg.set("work_name", args.work_name)
     if args.data_root is not None:
         cfg.set("paths.data_root", Path(args.data_root).expanduser().resolve())
     if args.reference is not None:
@@ -155,6 +178,7 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
         cfg.set("test.dump_diff", True)
 
     subject = str(cfg.subject)
+    work_name = str(cfg.work_name)
     data_root = Path(cfg.paths.data_root)
     ref_root = cfg.paths.reference_root
     out_root = args.output_dir
@@ -163,19 +187,12 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     else:
         out_root = Path(out_root).expanduser().resolve()
 
-    # 模型路径：配置显式给了就用；否则按参照仓库约定推导
-    model_ply = cfg.get("paths.model_ply")
-    if model_ply is None:
-        if ref_root is None:
-            raise SystemExit(
-                "[error] 未指定模型路径：请设置 paths.model_ply（configs/system.yaml）"
-                "、或 --ply、或提供 paths.reference_root 以便推导")
-        model_ply = (Path(ref_root) / "output" / subject
-                     / str(cfg.get("paths.model_subdir", "test")) / "model.ply")
-    model_ply = Path(model_ply)
+    # 模型路径：本项目 models/ 优先，找不到再回退参照仓库（见 docs/CONFIG.md）
+    model_ply = resolve_model_ply(cfg)
 
     data_dir = data_root / subject
     args.subject = subject
+    args.work_name = work_name
     args.data_root = data_root
     args.data = data_dir
     args.reference = Path(ref_root) if ref_root is not None else None
@@ -263,9 +280,19 @@ def render_reference(args, scene, frames: list[int]):
     """用参照实现渲染并返回 `{frame_index: HxWx3 uint8}`。"""
     from equivalence.reference_pipeline import build_reference, reference_render
 
+    # 参照实现用**它自己的同名模型**（output/<subject>/<work_name>/model.ply），
+    # 本项目 core 用 models/ 下的模型；两者本应内容一致，此处刻意分开取，
+    # 以免"对照"变成"自己跟自己比"。
+    ref_dir = reference_model_dir(args.cfg)
+    ref_ply = (ref_dir / "model.ply") if ref_dir is not None else None
+    if ref_ply is None or not ref_ply.exists():
+        raise SystemExit(
+            f"[error] 参照模型不存在：{ref_ply}\n"
+            "（参照实现渲染需要它自己的模型；换模型时请同步两边，"
+            "或用 --skip-reference 只测本项目）")
     ref = build_reference(
         reference_root=args.reference, src_root=REPO_ROOT / "src",
-        data_dir=args.data, ply_path=args.ply, tex_size=args.tex_size,
+        data_dir=args.data, ply_path=ref_ply, tex_size=args.tex_size,
         num_basis_in=args.num_basis_in, num_basis_blend=args.num_basis_blend,
         mlp_hidden=tuple(args.mlp_hidden), split=args.split,
     )
@@ -420,8 +447,11 @@ def main() -> int:
             print(f"[error] {label}不存在：{path}")
             return 1
 
-    print(f"[info] 模型     : {args.ply}")
+    print(f"[info] 本项目模型: {args.ply}")
+    print(f"[info] 参照模型  : "
+          f"{reference_model_dir(args.cfg) / 'model.ply' if args.reference else '（跳过）'}")
     print(f"[info] 数据集   : {args.data}")
+    print(f"[info] 模型名/工作名: {args.subject} / {args.work_name}")
     print(f"[info] 参照仓库 : {args.reference}")
     print(f"[info] 输出     : {args.output_dir}")
     print(f"[info] 配置     : {len(args.cfg.as_plain())} 节，"
@@ -517,6 +547,7 @@ def main() -> int:
 
     report = {
         "subject": args.subject,
+        "work_name": args.work_name,
         "ply": str(args.ply), "data": str(args.data),
         "frames": len(frames), "resolution": [scene.width, scene.height],
         "background": args.background,
@@ -565,7 +596,8 @@ def _print_summary(report: dict) -> None:
     s = report["summary"]
     W = 78
     print("\n" + "=" * W)
-    print(f"渲染测试报告 —— {report['subject']}，{report['frames']} 帧，"
+    print(f"渲染测试报告 —— {report['subject']}/{report['work_name']}，"
+          f"{report['frames']} 帧，"
           f"{report['resolution'][0]}x{report['resolution'][1]}")
     print("=" * W)
 
@@ -767,7 +799,8 @@ def _dry_run(args) -> int:
                 "median_ms_per_frame": ms, "fps": fps, "peak_memory_mib": 100.0}
 
     fake = {
-        "subject": "dry", "frames": 3, "resolution": [512, 512],
+        "subject": "dry", "work_name": "test",
+        "frames": 3, "resolution": [512, 512],
         "paths": {"report": "<dry-run 不写文件>"},
         "core_perf": _mk(4, 8.0, 125.0),
         "reference_perf": None,
@@ -791,7 +824,19 @@ def _dry_run(args) -> int:
         assert "报告" in buf.getvalue()
     print("  摘要打印     core-only / core+参照 / 带 sweep 三种形态均正常 ✓")
 
-    print("\n[dry-run] core/ 链路、指标函数、参数校验、摘要打印自检通过 ✓")
+    # ---- 配置解析结果（路径必须绝对、模型解析可用）----
+    assert Path(args.ply).is_absolute(), f"模型路径应为绝对：{args.ply}"
+    assert Path(args.data).is_absolute(), f"数据集路径应为绝对：{args.data}"
+    assert Path(args.output_dir).is_absolute(), "输出目录应为绝对"
+    assert args.data.name == args.subject, (
+        f"数据集目录应以 subject 结尾：{args.data} vs {args.subject}")
+    _validate(args)
+    print(f"  配置         subject={args.subject}/{args.work_name} "
+          f"batch={args.batch_size} frames={args.frames} "
+          f"tex={args.tex_size} bg={args.background} ✓")
+    print(f"  模型路径     {args.ply}")
+
+    print("\n[dry-run] 渲染链路、指标函数、参数校验、摘要打印、配置自检通过 ✓")
     return 0
 
 

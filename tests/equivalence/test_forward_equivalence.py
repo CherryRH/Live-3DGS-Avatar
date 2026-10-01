@@ -19,7 +19,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from live3dgsavatar.config import load_config
+from live3dgsavatar.config import (load_config, reference_model_dir,
+                                   resolve_model_ply)
 from support import REFERENCE_ROOT, REPO_ROOT
 
 # 路径一律来自配置（configs/system.yaml），**此处不硬编码**。
@@ -27,9 +28,11 @@ from support import REFERENCE_ROOT, REPO_ROOT
 _CFG = load_config()
 _SUBJECT = str(_CFG.subject)
 _DATA_ROOT = Path(_CFG.paths.data_root)
-PLY = Path(_CFG.get("paths.model_ply") or (
-    (Path(REFERENCE_ROOT) / "output" / _SUBJECT
-     / str(_CFG.get("paths.model_subdir", "test")) / "model.ply")))
+# 本项目模型（models/ 优先，回退参照）
+PLY = resolve_model_ply(_CFG, must_exist=False)
+# 参照实现用**它自己的**同名模型
+_REF_DIR = reference_model_dir(_CFG)
+REF_PLY = (_REF_DIR / "model.ply") if _REF_DIR is not None else PLY
 DATA = _DATA_ROOT / _SUBJECT
 
 

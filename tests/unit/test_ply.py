@@ -212,3 +212,33 @@ def test_save_rejects_weight_module_larger_than_gaussians(tmp_path) -> None:
         assert "tex_size" in str(e), f"报错应给出 tex_size 建议，实际：{e}"
     else:
         raise AssertionError("参数量超过高斯数时应报错")
+
+
+def test_load_rejects_tex_size_too_small_for_gaussians(tmp_path) -> None:
+    """**回归测试**：`tex_size` 装不下文件里的高斯数时必须报错。
+
+    `tex_size` 不参与存储（它只决定 UV texel 的容量上界 `tex_size²`），
+    因此**无法**从文件反推；但配错时必须显式报出，
+    否则会把错误配置静默带进后续的保存/重建。
+    曾实测：`tex_size=128`（上界 16384）加载 60353 个高斯**不报错**。
+    """
+    from live3dgsavatar.core.avatar import AvatarConfig
+    from live3dgsavatar.core.io import load_ply, save_ply
+
+    path = tmp_path / "m.ply"
+    avatar = _tiny_avatar(n=64, k=3, tex_size=8)          # 上界 8² = 64，刚好
+    save_ply(avatar, path)
+
+    # 正确配置可加载（config 从文件的自描述注释还原）
+    loaded = load_ply(path, device="cpu")
+    assert loaded.num_gaussians == 64
+
+    # tex_size 太小 → 明确报错
+    bad = AvatarConfig(tex_size=4, num_basis_in=7, num_basis_blend=3,
+                       mlp_hidden=(), use_weight_proj=True)
+    try:
+        load_ply(path, config=bad, device="cpu")
+    except ValueError as e:
+        assert "tex_size" in str(e), f"报错信息应提到 tex_size，实际：{e}"
+    else:
+        raise AssertionError("tex_size=4 装不下 64 个高斯，应报错")

@@ -67,7 +67,7 @@ def load_scene(
     Args:
         config: 配置对象；``None`` 时用 `load_config()` 读仓库根的 configs/
         frames: 取前多少帧；``None`` 用 `render.frames`；``-1`` 表示全部
-        subject: 覆盖 `subject`（数据集主体名）
+        subject: 覆盖 `subject`（人物名，同时是模型的一级目录名）
         device: 目标设备；``None`` 用 `runtime.device`（``cpu`` 便于无 GPU 自检）
     """
     cfg = config or load_config()
@@ -89,7 +89,8 @@ def load_scene(
     if not data_dir.exists():
         raise FileNotFoundError(
             f"数据集目录不存在：{data_dir}\n"
-            f"（由 paths.data_root={cfg.paths.data_root} + subject={cfg.subject} 推出；"
+            f"（由 paths.data_root={cfg.paths.data_root} + "
+            f"subject={cfg.subject} 推出；"
             "请检查 configs/system.yaml 或设 LIVE3DGS_DATA_ROOT）")
 
     from equivalence.reference_pipeline import reference_workspace

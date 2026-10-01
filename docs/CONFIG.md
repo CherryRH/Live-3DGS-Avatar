@@ -38,7 +38,9 @@ python scripts/show_config.py --json          # 机器可读
 | `LIVE3DGS_DATA_ROOT` | `paths.data_root` |
 | `LIVE3DGS_OUTPUT_DIR` | `paths.output_dir` |
 | `LIVE3DGS_REFERENCE_ROOT` | `paths.reference_root` |
+| `LIVE3DGS_MODELS_DIR` | `paths.models_dir` |
 | `LIVE3DGS_SUBJECT` | `subject` |
+| `LIVE3DGS_WORK_NAME` | `work_name` |
 | `LIVE3DGS_DEVICE` | `runtime.device` |
 
 环境变量只需填**路径字符串**，加载时会解析为绝对路径。
@@ -47,16 +49,56 @@ python scripts/show_config.py --json          # 机器可读
 
 | 字段 | 说明 |
 |---|---|
-| `subject` | 数据集主体名。实际读取 `<data_root>/<subject>/`。切换受试者只改这一处 |
+| `subject` | **人物名**，与 RGBAvatar 的 `--subject` 同名同义。既用于数据集（`<data_root>/<subject>/`），也用于模型的一级目录 |
+| `work_name` | 工作名（一次训练/导出的名字），参照里常用 `test` |
 | `paths.data_root` | 数据集根目录；下需含 `<subject>/images/` 与 `<subject>/checkpoint/` |
+| `paths.models_dir` | **本项目自己的模型根目录**（默认 `models`）。模型放 `<models_dir>/<subject>/<work_name>/` |
 | `paths.output_dir` | 产物根目录。各脚本写到 `<output_dir>/<脚本名>/` |
-| `paths.reference_root` | RGBAvatar 参照仓库根（**只读**）。等价门与渲染测试从中取 FLAME 模板、模板 UV、数据集读取代码与预训练模型 |
-| `paths.model_ply` | 预训练模型。`null` 表示按 `model_subdir` 推导 |
-| `paths.model_subdir` | 模型产物目录名（参照仓库里常是 `test`）。**与 `runtime.split` 无关** |
+| `paths.reference_root` | RGBAvatar 参照仓库根（**只读**）。取 FLAME 模板、模板 UV、数据集读取代码，以及**它自己的**同名模型 |
+| `paths.model_ply` | 显式指定模型文件。`null` 表示按下面的顺序自动查找 |
+| `paths.models_config` | 显式指定模型随附的 `config.yaml`。`null` 表示从模型目录里读 |
 | `paths.image_subdir` | 数据集原图子目录（默认 `images`），用作 PSNR 的 GT |
 | `runtime.device` | `cuda` 或 `cpu`。`cpu` 仅供不依赖 CUDA 内核的自检 |
 | `runtime.split` | 数据集切分：`all` / `train` / `test` |
 | `smoke.max_frames` | 采样帧数上限；`null` 表示不限制 |
+
+### 模型目录约定（与 RGBAvatar 的 `--subject` / `--work_name` 保持一致）
+
+```
+models/<subject>/<work_name>/model.ply          ← 本项目渲染统一用这里
+models/<subject>/<work_name>/config.yaml        ← 模型随附配置（从 RGBAvatar 复制）
+```
+
+参照实现渲染时用它**自己的**同名模型：`<reference_root>/output/<subject>/<work_name>/`。
+这与 RGBAvatar CLI 完全一致（`--subject` + `--work_name` 派生 `output_path` 与 `data_path`）：
+
+```python
+# RGBAvatar/render.py
+output_path = os.path.join(args.output_dir, args.subject, args.work_name)  # 模型
+data_path   = os.path.join(config['data_dir'], args.subject)               # 数据集
+```
+两边目录结构同名，便于对照与切换。
+
+**查找顺序**（`resolve_model_ply`，见 `src/live3dgsavatar/config/__init__.py`）：
+
+1. `paths.model_ply` —— 若显式配置，直接用它（文件不存在则报错，不静默回退）
+2. `<models_dir>/<subject>/<work_name>/model.ply` —— **本项目优先**
+3. `<reference_root>/output/<subject>/<work_name>/model.ply` —— 回退到参照
+
+> 渲染测试里，**core 用 `models/`，参照用 `output/`**，刻意分开取 ——
+> 否则"对照"会变成"自己跟自己比"。
+
+切换到别的模型：
+
+```bash
+# 命令行
+python scripts/render_test.py --subject duda --work-name test
+
+# 配置文件：改 subject / work_name 两处
+
+# 环境变量
+LIVE3DGS_SUBJECT=duda LIVE3DGS_WORK_NAME=test python scripts/render_test.py
+```
 
 ### 路径写法
 
@@ -88,9 +130,22 @@ output_dir: output                     # output 特殊：相对**当前工作目
 
 ### `model.network` —— 模型结构
 
-⚠️ **这一节必须与 `.ply` 文件匹配。** 项目的 `.ply` 头里写了
-`comment gaussian_config {...}` 自描述结构，加载时会与实际列数交叉校验，
-写错会**直接报错**而不是静默读错列。
+⚠️ **这一节必须与 `.ply` 文件匹配。** 但要注意**校验强度并不一致**：
+
+| 字段 | 能否从文件校验 | 写错的后果 |
+|---|---|---|
+| `num_basis_blend` (K) | ✅ 按 `xyz_b_*` 列数校验 | **明确报错** |
+| `num_basis_in` (D) | ✅ 按 `weight_module` 列数校验 | **明确报错** |
+| `tex_size` | ⚠️ 仅按容量上界 `tex_size² ≥ N` 校验 | 上界够大时不报错（见下） |
+| `mlp_hidden` / `use_weight_proj` | ❌ 不参与存储 | 写错会加载出**结构不同的网络** |
+
+原因：**参照实现写出的 `.ply` 没有 `comment gaussian_config` 注释**
+（本项目自己写出的文件才有，见 `docs/CONVENTIONS.md` §4）。
+因此消费外部模型时，结构信息只能来自本配置节。
+
+`tex_size` 尤其要注意：它**不参与存储**（只决定"一个 UV texel = 一个高斯"的容量上界），
+所以无法从文件反推。加载时会校验 `N ≤ tex_size²`，上界够大时**不会报错**，
+配错会静默带进后续的保存/重建。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -120,6 +175,16 @@ python scripts/equivalence_check.py --skip-render
 
 `test_scripts_have_no_business_defaults` 会静态检查脚本里不再出现
 `default=256` 这类业务默认量。
+
+常用参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--subject` / `--work-name` | 选对象与工作名（对应 `models/<subject>/<work_name>/`）。**同时接受 RGBAvatar 风格的下划线写法** `--work_name`，两边命令可直接互相复制 |
+| `--ply` | 直接指定模型文件，覆盖上面的推导 |
+| `--frames` / `--batch-size` | 采样规模与显存占用 |
+| `--skip-reference` | 不加载参照实现（只测本项目） |
+| `--dry-run` | CPU 自检，不访问数据集/GPU |
 
 ## 7. 写自己的脚本时怎么用
 

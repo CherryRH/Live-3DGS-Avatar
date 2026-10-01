@@ -35,11 +35,29 @@ sys.path.insert(0, str(SRC_ROOT))
 
 # ⚠️ 必须早于任何可能触发 chumpy 的导入（见 docs/ENVIRONMENT.md §3.10）
 import live3dgsavatar  # noqa: E402, F401  导入即施加 numpy 兼容补丁
-from live3dgsavatar.config import Config, load_config  # noqa: E402
+from live3dgsavatar.config import (  # noqa: E402
+    Config, load_config, reference_model_dir, resolve_model_ply)
 
 ATOL_ATTR = 1e-5
 PSNR_DB = 60.0
 ATOL_IMAGE = 1e-3
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    """把 RGBAvatar 风格的下划线参数名归一化成本项目的短横线写法。
+
+    参照实现的 CLI 用 `--work_name`（见 `RGBAvatar/render.py`），
+    本项目统一用 `--work-name`。为了让两边的命令可以直接互相复制，
+    这里把 `--a_b` 归一化为 `--a-b`，**两种写法都接受**。
+    """
+    out = []
+    for token in argv:
+        if token.startswith("--") and "_" in token:
+            name, sep, value = token.partition("=")
+            if name.count("-") == 2 and "_" in name:      # 形如 --work_name
+                token = name.replace("_", "-") + (sep + value if sep else "")
+        out.append(token)
+    return out
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,7 +68,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--config-dir", type=Path, default=None)
     p.add_argument("--reference", type=Path, default=None,
                    help="参照仓库（只读），覆盖 paths.reference_root")
-    p.add_argument("--subject", default=None)
+    p.add_argument("--subject", default=None,
+                   help="人物名 / 数据集主体名，同时也是模型的一级目录名（默认 configs/system.yaml 的 subject）")
+    p.add_argument("--work-name", default=None,
+                   help="工作名（默认 configs/system.yaml 的 work_name）")
     p.add_argument("--ply", type=Path, default=None,
                    help="预训练 model.ply，覆盖 paths.model_ply")
     p.add_argument("--data", type=Path, default=None,
@@ -64,7 +85,7 @@ def parse_args() -> argparse.Namespace:
                    help="只比对中间属性（不加载 nvdiffrast 光栅化）")
     p.add_argument("--out", type=Path, default=None,
                    help="报告输出目录；默认 <output_dir>/equivalence")
-    raw = p.parse_args()
+    raw = p.parse_args(_normalize_argv(sys.argv[1:]))
     return _finalize(raw, load_config(raw.config_dir))
 
 
@@ -72,6 +93,8 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
     """把命令行覆盖合并进配置，并解析出本脚本要用的全部值。"""
     if args.subject is not None:
         cfg.set("subject", args.subject)
+    if args.work_name is not None:
+        cfg.set("work_name", args.work_name)
     if args.reference is not None:
         cfg.set("paths.reference_root", Path(args.reference).expanduser().resolve())
     if args.ply is not None:
@@ -87,13 +110,14 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
             cfg.set(key, value)
 
     subject = str(cfg.subject)
+    work_name = str(cfg.work_name)
     ref_root = cfg.paths.reference_root
     if ref_root is None:
         raise SystemExit("[error] 缺少 paths.reference_root（参照仓库根目录）")
-    model_ply = cfg.get("paths.model_ply")
-    if model_ply is None:
-        model_ply = (Path(ref_root) / "output" / subject
-                     / str(cfg.get("paths.model_subdir", "test")) / "model.ply")
+    # 等价门两边用**各自**的模型：core 用本项目 models/，参照用它自己的 output/
+    model_ply = resolve_model_ply(cfg)
+    ref_dir = reference_model_dir(cfg)
+    ref_ply = (ref_dir / "model.ply") if ref_dir is not None else model_ply
     data_dir = args.data
     if data_dir is None:
         data_dir = Path(cfg.paths.data_root) / subject
@@ -102,8 +126,10 @@ def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
         out_dir = Path(cfg.paths.output_dir) / "equivalence"
 
     args.subject = subject
+    args.work_name = work_name
     args.reference = Path(ref_root)
     args.ply = Path(model_ply)
+    args.ref_ply = Path(ref_ply)
     args.data = Path(data_dir)
     # 参照的 FLAME 路径依赖其 cwd，故在 chdir 之前必须绝对化
     args.out = Path(out_dir).expanduser().resolve()

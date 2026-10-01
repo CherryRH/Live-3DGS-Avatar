@@ -183,7 +183,7 @@ Live3DGSAvatar/
 │   ├── run_tests.py             # 零依赖测试运行器（未装 pytest 也能跑）
 │   ├── support.py               # 参照加载与比较工具
 │   ├── reference_scene.py       # 参照侧几何/相机适配（脚本用，不属 core）
-│   ├── unit/                    # 单测（67 项，全部无需 GPU）
+│   ├── unit/                    # 单测（74 项，全部无需 GPU）
 │   └── equivalence/             # 数值等价门（stages.py + GPU 测试）
 ├── scripts/
 │   ├── setup_env.sh             # 一键建环境（幂等）—— P0
@@ -191,6 +191,7 @@ Live3DGSAvatar/
 │   ├── render_test.py           # 统一渲染测试：core vs 参照 vs 数据集原图 —— P1
 │   ├── equivalence_check.py     # 数值等价验收门（与参照逐层比对）—— P1
 │   └── _compat_shim.py          # 独立脚本用的精简兼容补丁
+├── models/                      # 本项目模型（<模型名>/<工作名>/model.ply，gitignore）
 ├── data/                        # 输入资产（gitignore）
 │   └── FLAME2020/               # generic_model.pkl / flame_uv.npz / eyelid
 ├── output/                      # 产物（gitignore）
@@ -264,7 +265,7 @@ error: could not delete 'build/lib.linux-x86_64-cpython-310/nvdiffrast/__init__.
 
 | 接入点 | 契约 | 状态 |
 |---|---|---|
-| 模型产物 | `.ply` + `comment gaussian_config {...}` 自描述结构 | ✅ 已定义，见 `docs/CONVENTIONS.md` §4 |
+| 模型产物 | `.ply`（3DGS 属性 + `xyz_b_*` / `rot_b_*` / `f_dc_b_*` 基 + `face_id` / `face_bary_*` 绑定） | ✅ 本项目写出的文件另含 `comment gaussian_config` 自描述；**参照写出的没有**，结构需由 `configs/render.yaml` 提供 |
 | 模型读取 | `core/io/ply.py::load_ply` → `GaussianAvatar` | ✅ 可用（当前消费参照仓库产出的模型） |
 | 驱动参数 | `[B, D]` 张量，`D = model.network.num_basis_in` | ✅ 已定义 |
 | 渲染接口 | `AvatarRuntime`（见 §7.1） | ⏳ P2 提供 |
@@ -349,9 +350,10 @@ class Session:
 | 数据集 | `/home/crh/Datasets/INSTA/duda`（254 帧） | ✅ 已有 |
 | 渲染测试产物 | `output/render_test/`（由 `scripts/render_test.py` 生成） | ✅ |
 
-> **`data/checkpoints` 不需要**：RGBAvatar 的数据集契约只有"多个 subject/work 下的 `checkpoint/` + `images/`"，
+> **`data/checkpoints` 不需要**：RGBAvatar 的数据集契约只有"多个 `<模型名>/<工作名>` 下的 `checkpoint/` + `images/`"，
 > 而这两者都在数据集目录内（`<DATA_DIR>/<SUBJECT>/{checkpoint,images}`）。本项目训练产出的
-> `model.ply` 归属于**训练输出**，因此放在 `output/<subject>/<work_name>/`，不新建 `data/checkpoints/`。
+> `model.ply` 归属于**训练输出**，参照放在 `output/<模型名>/<工作名>/`；
+> 本项目照此约定放在 `models/<模型名>/<工作名>/`，不新建 `data/checkpoints/`。
 
 > **数据集范围限制**：本阶段只以 `duda` 为基准，所有质量验收均以 duda 为准（约束 C7）。
 > `NeRSemble` 相关代码路径本阶段不引入。
@@ -380,7 +382,7 @@ class Session:
 | `core/types.py` · `core/avatar.py` · `core/io/ply.py` | ✅ 类型契约、参数容器、PLY 互操作 |
 | `core/deform/{tbn,bind,blend,binding}.py` | ✅ TBN / 绑定 / 混合 / UV 绑定构建 |
 | `core/render/{camera_utils,rasterizer}.py` | ✅ 矩阵边界 + 两个光栅化后端 |
-| `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**67 项**，全部无需 GPU |
+| `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**74 项**，全部无需 GPU |
 | `tests/equivalence/` · `scripts/equivalence_check.py` | ✅ 等价门（分层比对 + 前置检查） |
 | `scripts/render_test.py` | ✅ 统一渲染测试：core vs 参照 vs 数据集原图（含 CPU dry-run） |
 
@@ -407,7 +409,7 @@ class Session:
 | 峰值显存 | 106 MiB |
 | 参照基线 | 6.94 ms/帧（144 FPS）·峰值 1648 MiB（batch=10 预分配） |
 
-**③ 单元测试** —— `python tests/run_tests.py`：**67 通过 / 0 失败 / 1 跳过**（跳过项为需 GPU 的等价测试）。
+**③ 单元测试** —— `python tests/run_tests.py`：**74 通过 / 0 失败 / 1 跳过**（跳过项为需 GPU 的等价测试）。
 
 > **性能说明**：89 FPS vs 参照 144 FPS 的差距来自 `deform` 走纯 PyTorch
 > （`linear_blending` 默认不用 CUDA 内核、TBN 每帧全量重算）。这是**有意识的取舍**：
@@ -429,7 +431,7 @@ class Session:
 | 兼容补丁顺序 | 加载参照实现的模块必须在模块层 `import live3dgsavatar`（否则 chumpy ImportError，见 `ENVIRONMENT.md` §3.10） |
 | FLAME dtype | 不得覆盖 `FlameConfig.dtype`（float64 是刻意的，见 `ENVIRONMENT.md` §3.11） |
 
-**「导入 `core` 不需要 GPU」** 这一性质尤其重要：CPU 侧的 67 项测试才得以成立。
+**「导入 `core` 不需要 GPU」** 这一性质尤其重要：CPU 侧的 74 项测试才得以成立。
 
 ### 9.4 等价门的执行结构
 
@@ -461,7 +463,7 @@ C 节：5 项持续关注 O1–O5）。核心几条：
 | 参照缺陷 | 本项目处置 |
 |---|---|
 | `save_ply()` 引用不存在的属性 → 保存必失败 | 绑定信息归属 `GaussianAvatar`（`register_buffer`） |
-| `load_ply()` 从配置读基数量而非文件列数 → 静默读错 | PLY 头写 `comment gaussian_config` 自描述，加载时交叉校验 |
+| `load_ply()` 从配置读基数量而非文件列数 → 静默读错 | 加载时与**文件列数**交叉校验（K / D / `tex_size²` 容量），不一致即报错 |
 | `clone()` 签名不匹配 → 死代码 | 不移植；快照用 `state_dict()` |
 | 三份重复的 `render_gs_batch`（含一份 `# legacy`） | 合并为 `Rasterizer` 协议 + 两个后端 |
 | 单帧/批量两套张量形状并存 | 固定 batch-first，`GaussianSet.space` 显式标注空间 |

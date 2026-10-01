@@ -12,9 +12,19 @@
 #
 # 用 `python scripts/show_config.py` 查看**解析后**的最终值。
 
-# 当前使用的数据集主体名。切换受试者只需改这一处
-# （脚本的 --subject 可临时覆盖）。
+# 人物名 / 工作名 —— 与 RGBAvatar 的 CLI 与目录约定完全一致。
+#
+#   * subject   人物名。既用于**数据集**（<data_root>/<subject>/），
+#               也用于**模型**（<models_dir>/<subject>/<work_name>/）
+#   * work_name 一次训练/导出的名字，参照里常用 `test`
+#
+# 参照实现与本项目用同一套名字解析各自的模型路径：
+#   本项目 → <paths.models_dir>/<subject>/<work_name>/model.ply
+#   参照   → <paths.reference_root>/output/<subject>/<work_name>/model.ply
+#
+# 切换对象只需改这两处（脚本的 --subject / --work-name 可临时覆盖）。
 subject: duda
+work_name: test
 
 paths:
   # 数据集根目录。实际读取 <data_root>/<subject>/，
@@ -30,14 +40,19 @@ paths:
   # 数据集读取代码，以及它自带的预训练模型。
   reference_root: /home/crh/Projects/RGBAvatar
 
-  # 预训练模型。留空（null）则按下面的 model_subdir 推导：
-  #   <reference_root>/output/<subject>/<model_subdir>/model.ply
-  # 若你的模型在别处，直接写绝对路径覆盖。
+  # 本项目自己的模型根目录。模型按 <models_dir>/<subject>/<work_name>/ 存放，
+  # **与 RGBAvatar 的目录约定保持一致**，便于两边对照。
+  models_dir: models
+
+  # 显式指定模型文件。留空（null）表示按下面的顺序自动查找：
+  #   1. <models_dir>/<subject>/<work_name>/model.ply             ← 本项目优先
+  #   2. <reference_root>/output/<subject>/<work_name>/model.ply  ← 回退到参照
+  # 若模型在别处，直接写绝对路径。
   #
-  # ⚠️ model_subdir 是**模型产物所在目录名**，与 runtime.split（数据集切分）
-  #    是两件不同的事：模型常导出到 `test/`，而数据集可以按 `all` 读取。
+  # 也可用 models_config 显式指定各模型随附的 config.yaml；
+  # null 表示从上面的模型目录里读（RGBAvatar 在模型目录放了 config.yaml）。
   model_ply: null
-  model_subdir: test
+  models_config: null
 
   # 渲染结果图（数据集原图）相对 <data_root>/<subject>/ 的子目录。
   # 用作 PSNR 的 GT。

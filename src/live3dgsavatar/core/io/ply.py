@@ -215,6 +215,16 @@ def load_ply(
             f"num_basis 不一致：配置给出 {config.num_basis}，文件有 {k_from_file} 列。"
             "（参照实现在此会静默出错；请修正 AvatarConfig 或改用正确的文件）")
 
+    # tex_size 不参与存储（它只决定「一个 UV texel = 一个高斯」的容量上界），
+    # 因此**无法**从文件内容反推。但若配置的 tex_size 连现有高斯数都装不下，
+    # 说明配置写错了 —— 这类错误必须显式报出，否则会静默带进后续保存/重建。
+    capacity = config.tex_size * config.tex_size
+    if n > capacity:
+        raise ValueError(
+            f"tex_size 与文件不一致：tex_size={config.tex_size} 最多容纳 "
+            f"{capacity} 个高斯，而文件有 {n} 个。"
+            "请修正 configs/render.yaml 的 model.network.tex_size")
+
     xyz_b = np.stack([np.asarray(el[f"xyz_b_{i}"], dtype=np.float32)
                       for i in range(k_from_file * 3)], axis=1).reshape(n, k_from_file, 3)
     rot_b = np.stack([np.asarray(el[f"rot_b_{i}"], dtype=np.float32)

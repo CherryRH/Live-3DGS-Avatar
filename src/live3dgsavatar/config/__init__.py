@@ -28,7 +28,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-__all__ = ["Config", "load_config", "repo_root", "CONFIG_DIR"]
+__all__ = [
+    "Config", "load_config", "repo_root", "CONFIG_DIR",
+    "model_dir", "reference_model_dir", "resolve_model_ply",
+    "resolve_model_config",
+]
 
 # 仓库根：src/live3dgsavatar/config/__init__.py → 上溯 4 层
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -39,7 +43,9 @@ _ENV_OVERRIDES = {
     "LIVE3DGS_DATA_ROOT": "paths.data_root",
     "LIVE3DGS_OUTPUT_DIR": "paths.output_dir",
     "LIVE3DGS_REFERENCE_ROOT": "paths.reference_root",
+    "LIVE3DGS_MODELS_DIR": "paths.models_dir",
     "LIVE3DGS_SUBJECT": "subject",
+    "LIVE3DGS_WORK_NAME": "work_name",
     "LIVE3DGS_DEVICE": "runtime.device",
 }
 
@@ -47,11 +53,13 @@ _ENV_OVERRIDES = {
 # **刻意保持最小**——真正的默认量应当在 configs/*.yaml 里，便于用户查看与修改。
 _FALLBACK: dict[str, Any] = {
     "subject": "duda",
+    "work_name": "test",
     "paths.data_root": "data/INSTA",
     "paths.output_dir": "output",
     "paths.reference_root": None,
+    "paths.models_dir": "models",
     "paths.model_ply": None,
-    "paths.model_subdir": "test",
+    "paths.models_config": None,
     "paths.image_subdir": "images",
     "runtime.device": "cuda",
     "runtime.split": "all",
@@ -80,7 +88,9 @@ _PATH_FIELDS = (
     "paths.data_root",
     "paths.output_dir",
     "paths.reference_root",
+    "paths.models_dir",
     "paths.model_ply",
+    "paths.models_config",
 )
 
 # 仓库根下不存在的相对路径，按 cwd 解析更符合直觉的字段。
@@ -279,3 +289,93 @@ def _validate(cfg: Config) -> None:
 def repo_root() -> Path:
     """仓库根目录。"""
     return REPO_ROOT
+
+
+# --------------------------------------------------------- 模型路径解析 --
+
+
+def model_dir(cfg: "Config" | None = None) -> Path:
+    """本项目自己的模型目录：`<models_dir>/<subject>/<work_name>/`。"""
+    cfg = cfg or load_config()
+    return Path(cfg.paths.models_dir) / str(cfg.subject) / str(cfg.work_name)
+
+
+def reference_model_dir(cfg: "Config" | None = None) -> Path | None:
+    """参照实现的同名模型目录：`<reference_root>/output/<subject>/<work_name>/`。
+
+    参照仓库不存在时返回 ``None``。
+    """
+    cfg = cfg or load_config()
+    if cfg.paths.reference_root is None:
+        return None
+    return (Path(cfg.paths.reference_root) / "output"
+            / str(cfg.subject) / str(cfg.work_name))
+
+
+def resolve_model_ply(cfg: "Config" | None = None,
+                      must_exist: bool = True) -> Path:
+    """解析模型 `.ply` 路径。
+
+    查找顺序（与 RGBAvatar 的目录约定保持一致）：
+
+    1. `paths.model_ply` —— 若显式配置，直接用它
+    2. `<models_dir>/<subject>/<work_name>/model.ply` —— **本项目优先**
+    3. `<reference_root>/output/<subject>/<work_name>/model.ply` —— 回退到参照
+
+    Args:
+        cfg: 配置；``None`` 时读仓库根的 configs/
+        must_exist: 为真时，全部候选都不存在就报错并列出尝试过的路径
+
+    Raises:
+        FileNotFoundError: `must_exist` 为真且找不到任何候选
+    """
+    cfg = cfg or load_config()
+
+    explicit = cfg.get("paths.model_ply")
+    if explicit is not None:
+        path = Path(explicit)
+        if must_exist and not path.exists():
+            raise FileNotFoundError(
+                f"paths.model_ply 指定的模型不存在：{path}\n"
+                "请检查 configs/system.yaml，或用 --ply 指定。")
+        return path
+
+    candidates = [model_dir(cfg) / "model.ply"]
+    ref_dir = reference_model_dir(cfg)
+    if ref_dir is not None:
+        candidates.append(ref_dir / "model.ply")
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    if must_exist:
+        tried = "\n".join(f"  {i}. {p}" for i, p in enumerate(candidates, 1))
+        raise FileNotFoundError(
+            f"找不到模型（subject={cfg.subject}, "
+            f"work_name={cfg.work_name}）。尝试过：\n{tried}\n"
+            "请把模型放到本项目 models/ 下，或改 configs/system.yaml，"
+            "或用 --ply 指定。")
+    return candidates[0]
+
+
+def resolve_model_config(cfg: "Config" | None = None) -> Path | None:
+    """解析模型随附的 `config.yaml`（RGBAvatar 在模型目录放了它）。
+
+    查找顺序：`paths.models_config` → `<models_dir>/.../config.yaml`
+    → `<reference_root>/output/.../config.yaml`。找不到返回 ``None``。
+    """
+    cfg = cfg or load_config()
+    explicit = cfg.get("paths.models_config")
+    if explicit is not None:
+        return Path(explicit)
+
+    candidates = [model_dir(cfg) / "config.yaml"]
+    ref_dir = reference_model_dir(cfg)
+    if ref_dir is not None:
+        candidates.append(ref_dir / "config.yaml")
+
+    for path in candidates:
+        if path.exists():
+            return path
+    return None

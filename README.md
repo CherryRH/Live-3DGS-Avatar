@@ -106,15 +106,40 @@ python scripts/equivalence_check.py \
 ## 目录
 
 ```
+models/        本项目使用的模型（<模型名>/<工作名>/model.ply，见下）
 src/           项目源码（core/ 已完成；data/training/runtime 为后续阶段）
 scripts/       环境搭建、自检、等价门、渲染出图
 submodules/    本地 CUDA 扩展与第三方源码（vendored）
-tests/         单元测试（67 项，无需 GPU）与数值等价门
+tests/         单元测试（74 项，无需 GPU）与数值等价门
 docs/          架构 / 导览 / 约定 / 差异 / 环境
 data/          输入资产（不入库）
 output/        渲染产物（不入库）
 configs/       系统配置与渲染配置（见 docs/CONFIG.md）
 ```
+
+## 模型
+
+本项目渲染统一使用 `models/` 下的模型，按**人物名 / 工作名**两级目录存放，
+与 RGBAvatar 的 `output/<subject>/<work_name>/` 约定一致：
+
+```
+models/duda/test/model.ply       ← 本项目渲染用
+models/duda/test/config.yaml     ← 随附配置
+```
+
+`model.ply` 约 62MB，**不入库**。首次使用请从 RGBAvatar 复制（或在 `configs/system.yaml`
+里把 `paths.model_ply` 指向你的模型）：
+
+```bash
+mkdir -p models/duda/test
+cp /path/to/RGBAvatar/output/duda/test/{model.ply,config.yaml} models/duda/test/
+```
+
+切换对象：改 `configs/system.yaml` 的 `subject` / `work_name`，
+或用 `python scripts/render_test.py --subject <人物名> --work-name <工作名>`
+（与 RGBAvatar 的 CLI 同名同义）。
+参照实现渲染时用它自己的同名模型，两边刻意分开取以便对照。
+详见 [`docs/CONFIG.md`](docs/CONFIG.md)。
 
 ## 测试
 

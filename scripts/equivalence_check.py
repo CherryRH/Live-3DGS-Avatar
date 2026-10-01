@@ -13,10 +13,12 @@
 用法::
 
     conda activate live3dgs
-    python scripts/equivalence_check.py \
-        --ply  /home/crh/Projects/RGBAvatar/output/duda/test/model.ply \
-        --data /home/crh/Datasets/INSTA/duda \
-        --frames 3
+    python scripts/equivalence_check.py                 # 全部取配置默认值
+    python scripts/equivalence_check.py --frames 3      # 只比对 3 帧
+    python scripts/equivalence_check.py --skip-render   # 不加载光栅化
+
+所有路径与模型结构来自 `configs/system.yaml` 与 `configs/render.yaml`
+（见 docs/CONFIG.md）；命令行只做覆盖。
 """
 
 from __future__ import annotations
@@ -31,32 +33,93 @@ SRC_ROOT = REPO_ROOT / "src"
 sys.path.insert(0, str(REPO_ROOT / "tests"))     # 复用 tests/ 下的支撑模块
 sys.path.insert(0, str(SRC_ROOT))
 
+# ⚠️ 必须早于任何可能触发 chumpy 的导入（见 docs/ENVIRONMENT.md §3.10）
+import live3dgsavatar  # noqa: E402, F401  导入即施加 numpy 兼容补丁
+from live3dgsavatar.config import Config, load_config  # noqa: E402
+
 ATOL_ATTR = 1e-5
 PSNR_DB = 60.0
 ATOL_IMAGE = 1e-3
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="P1 数值等价验收门")
-    p.add_argument("--reference", type=Path,
-                   default=Path("/home/crh/Projects/RGBAvatar"),
-                   help="RGBAvatar 参照仓库（只读）")
-    p.add_argument("--ply", type=Path, required=True, help="预训练 model.ply")
-    p.add_argument("--data", type=Path, required=True, help="数据集目录")
-    p.add_argument("--frames", type=int, default=3, help="比对帧数（默认 3）")
-    p.add_argument("--tex-size", type=int, default=256)
-    p.add_argument("--num-basis-in", type=int, default=129)
-    p.add_argument("--num-basis-blend", type=int, default=20)
-    p.add_argument("--mlp-hidden", type=int, nargs="*", default=[128, 128])
+    """命令行参数 = **对配置文件的覆盖层**（默认量集中在 configs/）。"""
+    p = argparse.ArgumentParser(
+        description="P1 数值等价验收门",
+        epilog="默认值来自 configs/*.yaml；用 python scripts/show_config.py 查看。")
+    p.add_argument("--config-dir", type=Path, default=None)
+    p.add_argument("--reference", type=Path, default=None,
+                   help="参照仓库（只读），覆盖 paths.reference_root")
+    p.add_argument("--subject", default=None)
+    p.add_argument("--ply", type=Path, default=None,
+                   help="预训练 model.ply，覆盖 paths.model_ply")
+    p.add_argument("--data", type=Path, default=None,
+                   help="数据集目录，覆盖 <data_root>/<subject>")
+    p.add_argument("--frames", type=int, default=None)
+    p.add_argument("--tex-size", type=int, default=None)
+    p.add_argument("--num-basis-in", type=int, default=None)
+    p.add_argument("--num-basis-blend", type=int, default=None)
+    p.add_argument("--mlp-hidden", type=int, nargs="+", default=None)
     p.add_argument("--skip-render", action="store_true",
                    help="只比对中间属性（不加载 nvdiffrast 光栅化）")
-    p.add_argument("--out", type=Path, default=Path("output/equivalence"))
-    args = p.parse_args()
+    p.add_argument("--out", type=Path, default=None,
+                   help="报告输出目录；默认 <output_dir>/equivalence")
+    raw = p.parse_args()
+    return _finalize(raw, load_config(raw.config_dir))
 
-    # chdir 到参照仓库之前必须绝对化（参照的 FLAME 路径依赖其 cwd）
-    for name in ("reference", "ply", "data", "out"):
-        setattr(args, name, Path(getattr(args, name)).expanduser().resolve())
+
+def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
+    """把命令行覆盖合并进配置，并解析出本脚本要用的全部值。"""
+    if args.subject is not None:
+        cfg.set("subject", args.subject)
+    if args.reference is not None:
+        cfg.set("paths.reference_root", Path(args.reference).expanduser().resolve())
+    if args.ply is not None:
+        cfg.set("paths.model_ply", Path(args.ply).expanduser().resolve())
+    if args.frames is not None:
+        cfg.set("render.frames", args.frames)
+    for cli, key in (("tex_size", "model.network.tex_size"),
+                     ("num_basis_in", "model.network.num_basis_in"),
+                     ("num_basis_blend", "model.network.num_basis_blend"),
+                     ("mlp_hidden", "model.network.mlp_hidden")):
+        value = getattr(args, cli)
+        if value is not None:
+            cfg.set(key, value)
+
+    subject = str(cfg.subject)
+    ref_root = cfg.paths.reference_root
+    if ref_root is None:
+        raise SystemExit("[error] 缺少 paths.reference_root（参照仓库根目录）")
+    model_ply = cfg.get("paths.model_ply")
+    if model_ply is None:
+        model_ply = (Path(ref_root) / "output" / subject
+                     / str(cfg.get("paths.model_subdir", "test")) / "model.ply")
+    data_dir = args.data
+    if data_dir is None:
+        data_dir = Path(cfg.paths.data_root) / subject
+    out_dir = args.out
+    if out_dir is None:
+        out_dir = Path(cfg.paths.output_dir) / "equivalence"
+
+    args.subject = subject
+    args.reference = Path(ref_root)
+    args.ply = Path(model_ply)
+    args.data = Path(data_dir)
+    # 参照的 FLAME 路径依赖其 cwd，故在 chdir 之前必须绝对化
+    args.out = Path(out_dir).expanduser().resolve()
+    args.frames = int(cfg.get("render.frames", 1))
+    args.tex_size = int(cfg.get("model.network.tex_size", 256))
+    args.num_basis_in = int(cfg.get("model.network.num_basis_in", 129))
+    args.num_basis_blend = int(cfg.get("model.network.num_basis_blend", 20))
+    hidden = cfg.get("model.network.mlp_hidden")
+    args.mlp_hidden = list(hidden) if hidden else []
+    args.split = str(cfg.runtime.split)
+    args.cfg = cfg
+
+    if args.frames != -1 and args.frames < 1:
+        raise SystemExit(f"[error] --frames 必须 ≥ 1 或 -1，实际 {args.frames}")
     return args
+
 
 def _preflight(args) -> list[str]:
     """不依赖 GPU 的前置检查，避免"跑到第 5 步才发现路径不对"。"""

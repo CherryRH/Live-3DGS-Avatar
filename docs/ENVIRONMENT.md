@@ -258,22 +258,22 @@ python scripts/env_check.py --strict   # 有警告即返回 1（CI 用）
 `scripts/setup_env.sh` 在第 6 步会先做一次同等的扩展校验，失败即中止，
 不会把问题留到第 7 步。
 
-### 4.2 GPU 冒烟测试
+### 4.2 GPU 渲染测试
 
 ```bash
 conda activate live3dgs
+python scripts/show_config.py          # 先确认路径指对了
 python scripts/render_test.py --frames 20
 ```
 
-产出：`output/smoke/*.png` + `baseline.json`（单帧耗时 / FPS / 峰值显存）。
-这份基线同时是 P1「数值等价门」的参照产物。
+产出：`output/render_test/`（core 渲染图 + 参照渲染图 + `report.json`）。
+报告含三方 PSNR（core vs 参照 / core vs 数据集 / 参照 vs 数据集）与性能对比。
+路径与参数全部来自 `configs/`，见 `docs/CONFIG.md`。
 
-默认渲染数据集全部帧（254 帧），因此「总耗时 / 帧数」即为稳定的单帧耗时；
-只想过一遍流程时用 `--frames 3` 快速跑。
+只想过一遍流程时用 `--frames 3`；无需参照实现时加 `--skip-reference`。
 
-> 脚本会先把 `--out/--ply/--data` 解析为**绝对路径**再切换工作目录
-> （参照实现依赖其仓库根目录作为 cwd 来定位 FLAME 模型）。
-> 若输出出现在参照仓库内部，说明此处被改坏了。
+> 脚本会先把所有路径解析为**绝对路径**再进入参照仓库的 cwd
+> （参照实现依赖其仓库根作为 cwd 来定位 FLAME 模型）。
 
 ---
 

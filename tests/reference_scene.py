@@ -16,6 +16,8 @@ from pathlib import Path
 
 import torch
 
+from live3dgsavatar.config import Config, load_config
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
@@ -23,8 +25,6 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 #    `live3dgsavatar/__init__.py` 导入即施加 numpy 兼容补丁。
 import live3dgsavatar  # noqa: E402, F401  （勿删：导入即生效）
 
-DEFAULT_DATA = Path("/home/crh/Datasets/INSTA/duda")
-DEFAULT_PLY = Path("/home/crh/Projects/RGBAvatar/output/duda/test/model.ply")
 
 
 @dataclass
@@ -55,24 +55,44 @@ class Scene:
 
 
 def load_scene(
-    data_dir: Path = DEFAULT_DATA,
-    reference_root: Path | None = None,
-    frames: int = 3,
-    split: str = "all",
-    device: str = "cuda",
+    config: Config | None = None,
+    frames: int | None = None,
+    subject: str | None = None,
+    device: str | None = None,
 ) -> Scene:
     """加载模板几何、相机与若干帧的网格顶点。
 
-    Args:
-        data_dir: INSTA 格式数据集目录（需含 `images/` 与 `checkpoint/`）
-        reference_root: RGBAvatar 只读参照仓库；为 ``None`` 时用默认路径
-        frames: 取前多少帧；``-1`` 表示全部
-        split: `train` / `test` / `all`
-        device: 目标设备；`cpu` 便于在无 GPU 环境自检加载路径
-    """
-    from equivalence.reference_pipeline import reference_workspace
+    所有路径与切分来自配置（`configs/system.yaml`），**本模块不含任何硬编码路径**。
 
-    ref_root = (reference_root or Path("/home/crh/Projects/RGBAvatar")).resolve()
+    Args:
+        config: 配置对象；``None`` 时用 `load_config()` 读仓库根的 configs/
+        frames: 取前多少帧；``None`` 用 `render.frames`；``-1`` 表示全部
+        subject: 覆盖 `subject`（数据集主体名）
+        device: 目标设备；``None`` 用 `runtime.device`（``cpu`` 便于无 GPU 自检）
+    """
+    cfg = config or load_config()
+    if subject is not None:
+        cfg.set("subject", subject)
+    if device is None:
+        device = str(cfg.get("runtime.device", "cuda"))
+
+    data_dir = Path(cfg.paths.data_root) / str(cfg.subject)
+    ref_root = cfg.paths.reference_root
+    if ref_root is None:
+        raise ValueError(
+            "缺少 paths.reference_root（参照仓库根目录）。"
+            "请在 configs/system.yaml 设置或设 LIVE3DGS_REFERENCE_ROOT。")
+    ref_root = Path(ref_root)
+    split = str(cfg.runtime.split)
+    if frames is None:
+        frames = int(cfg.get("render.frames", 1))
+    if not data_dir.exists():
+        raise FileNotFoundError(
+            f"数据集目录不存在：{data_dir}\n"
+            f"（由 paths.data_root={cfg.paths.data_root} + subject={cfg.subject} 推出；"
+            "请检查 configs/system.yaml 或设 LIVE3DGS_DATA_ROOT）")
+
+    from equivalence.reference_pipeline import reference_workspace
 
     with reference_workspace(ref_root, REPO_ROOT / "src"):
         from dataset import FLAMEDataset  # noqa: PLC0415
@@ -85,8 +105,11 @@ def load_scene(
         #    抛 `expected scalar type Double but found Float`。
         #    网格顶点在 FLAMEDataset 内部已降到 float32（`mesh_verts`），无需在此转换。
         flame = FLAME(FlameConfig()).to(device)
-        ds = FLAMEDataset(flame, str(data_dir), split=split, pin_memory=False,
-                          use_shape_weight=True, use_pose_weight=True)
+        ds = FLAMEDataset(
+            flame, str(data_dir), split=split,
+            pin_memory=bool(cfg.get("dataset.pin_memory", False)),
+            use_shape_weight=bool(cfg.get("dataset.use_shape_weight", True)),
+            use_pose_weight=bool(cfg.get("dataset.use_pose_weight", True)))
 
         n = ds.__len__() if frames < 0 else min(frames, ds.__len__())
         out = [
@@ -96,12 +119,11 @@ def load_scene(
         ]
 
         # 契约自检：下游 `core/` 只接受 float32（CUDA 内核限制）
-        for i, f in enumerate(out[:1]):
+        for f in out[:1]:
             assert f["mesh"].dtype == torch.float32, (
                 f"mesh 顶点应为 float32（core/ 与 CUDA 内核要求），实际 {f['mesh'].dtype}")
             assert f["blend_weight"].dtype == torch.float32, (
                 f"blend_weight 应为 float32，实际 {f['blend_weight'].dtype}")
-            assert f["mesh"].shape[0] == flame.v_template.shape[0] or True, ""
         return Scene(
             frames=out,
             faces=flame.faces.detach().clone().to(torch.int32),

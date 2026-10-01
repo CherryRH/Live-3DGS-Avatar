@@ -1,0 +1,54 @@
+# Live3DGSAvatar —— 渲染配置
+#
+# 本文件集中存放**渲染相关默认量**；路径与设备见 configs/system.yaml。
+# 字段说明见 docs/CONFIG.md。
+#
+# 所有字段都可通过命令行临时覆盖，例如：
+#   python scripts/render_test.py --batch-size 2 --frames 5
+#
+# ⚠️ model.network 一节是**模型结构**，必须与 .ply 文件匹配。
+#    项目的 .ply 头里写了 `comment gaussian_config {...}` 自描述结构，
+#    加载时会与实际列数交叉校验；若这里写错会直接报错而不是静默读错列。
+
+render:
+  # 输出图像分辨率由数据集相机内参决定，此处不配置。
+  # 背景色：[0,0,0] 黑 / [1,1,1] 白。数据集原图为黑底。
+  background: [0.0, 0.0, 0.0]
+
+  # 高斯球缩放系数（1.0 表示不额外缩放）。
+  scaling_modifier: 1.0
+
+  # 球谐阶数。本项目只用 SH 的 DC 项（见 docs/CONVENTIONS.md）。
+  sh_degree: 0
+
+  # 批量渲染的批大小。core 与参照实现**共用**该值，
+  # 以保证计时口径一致。显存不足时调小（6GB 卡建议 ≤ 4）。
+  batch_size: 4
+
+  # 默认渲染帧数；-1 表示数据集全部帧。
+  frames: 20
+
+  # 训练用的预分配上限（当前仅 BatchRasterizer 使用）。
+  # 训练功能待接入，此处保留默认量。
+  max_batch_size: 10
+  max_gaussian_size: 60353
+  num_streams: 3
+
+# 模型结构与网络超参。必须与 .ply 匹配，否则加载报错。
+model:
+  network:
+    tex_size: 256          # UV 纹理边长 → 高斯数上限 tex_size²
+    num_basis_in: 129      # 驱动参数维度（FLAME 姿态/表情等）
+    num_basis_blend: 20    # blendshape 基数量 K
+    mlp_hidden: [128, 128] # 权重映射 MLP 的隐藏层宽度
+    use_weight_proj: true  # 是否使用 MLP 权重投影
+
+# 数据集读取（仅参照侧 FLAMEDataset 需要；本项目 core/ 不读数据集）。
+dataset:
+  use_shape_weight: true
+  use_pose_weight: true
+  pin_memory: false
+
+# 渲染测试与等价门共用的采样与输出选项。
+test:
+  dump_diff: false         # 是否输出并排对比图

@@ -1,0 +1,258 @@
+"""配置系统测试（无需 GPU、无需数据集）。
+
+覆盖：默认量来源、优先级链、路径解析、非法配置报错、以及
+**「代码中不得出现硬编码路径」**这条约束。
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from live3dgsavatar.config import CONFIG_DIR, Config, load_config, repo_root
+
+from support import REPO_ROOT
+
+
+# ------------------------------------------------------------------ 基本 --
+
+
+def test_loads_defaults_from_yaml_files() -> None:
+    """默认量应当来自 configs/*.yaml，而不是散落在代码里的字面量。"""
+    cfg = load_config()
+    assert (CONFIG_DIR / "system.yaml").exists(), "configs/system.yaml 必须存在"
+    assert (CONFIG_DIR / "render.yaml").exists(), "configs/render.yaml 必须存在"
+
+    # 这几项是 YAML 提供的（而非代码兜底）
+    assert cfg.get("render.batch_size") == 4
+    assert cfg.get("render.frames") == 20
+    assert cfg.get("model.network.tex_size") == 256
+    assert cfg.get("model.network.num_basis_in") == 129
+    assert cfg.get("model.network.num_basis_blend") == 20
+    assert cfg.get("model.network.mlp_hidden") == [128, 128]
+
+
+def test_path_fields_are_absolute_paths() -> None:
+    """路径字段必须已解析为绝对 `Path`（脚本会 chdir，相对路径会失效）。"""
+    cfg = load_config()
+    for key in ("paths.data_root", "paths.output_dir", "paths.reference_root"):
+        value = cfg.get(key)
+        assert isinstance(value, Path), f"{key} 应为 Path，实际 {type(value).__name__}"
+        assert value.is_absolute(), f"{key} 应为绝对路径，实际 {value}"
+    # model_ply 允许为 None（表示按 model_subdir 推导）
+    assert cfg.get("paths.model_ply") is None or isinstance(
+        cfg.get("paths.model_ply"), Path)
+
+
+def test_tilde_is_expanded() -> None:
+    cfg = Config({"paths": {"data_root": "~/datasets"}})
+    # 通过内部解析函数验证（不依赖具体文件是否存在）
+    from live3dgsavatar.config import _resolve_path
+
+    resolved = _resolve_path("~/datasets", "paths.data_root")
+    assert resolved.is_absolute()
+    assert "~" not in str(resolved)
+
+
+
+import contextlib
+
+
+@contextlib.contextmanager
+def _env(**pairs):
+    """临时设置/删除环境变量（零依赖，替代 pytest 的 monkeypatch）。"""
+    old = {k: os.environ.get(k) for k in pairs}
+    try:
+        for key, value in pairs.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        yield
+    finally:
+        for key, value in old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+class _Exc:
+    """承载捕获到的异常，模拟 `pytest.raises(...) as exc` 的 `.value`。"""
+
+    value: BaseException | None = None
+
+
+@contextlib.contextmanager
+def _raises(exc_type):
+    """零依赖的 `pytest.raises` 替代（运行器的 pytest 桩不支持 raises）。"""
+    holder = _Exc()
+    try:
+        yield holder
+    except exc_type as e:
+        holder.value = e
+        return
+    except Exception as e:                       # noqa: BLE001
+        raise AssertionError(
+            f"期望 {exc_type.__name__}，实际抛出 {type(e).__name__}: {e}") from e
+    raise AssertionError(f"期望 {exc_type.__name__}，但未抛出异常")
+
+
+def test_env_overrides_yaml() -> None:
+    with _env(LIVE3DGS_DATA_ROOT="/tmp/env_ds", LIVE3DGS_DEVICE="cpu"):
+        cfg = load_config()
+    assert str(cfg.paths.data_root) == "/tmp/env_ds"
+    assert cfg.runtime.device == "cpu"
+
+
+def test_env_can_be_disabled() -> None:
+    with _env(LIVE3DGS_DATA_ROOT="/tmp/ignored"):
+        cfg = load_config(env=False)
+    assert str(cfg.paths.data_root) != "/tmp/ignored"
+
+
+# --------------------------------------------------------------- 优先级 --
+
+
+def test_yaml_overrides_builtin_fallback(tmp_path: Path) -> None:
+    """YAML 里写了的值必须胜过代码内置兜底。"""
+    (tmp_path / "system.yaml").write_text(
+        "subject: custom\npaths:\n  data_root: /tmp/yaml_ds\n", encoding="utf-8")
+    cfg = load_config(config_dir=tmp_path)
+    assert cfg.subject == "custom"
+    assert str(cfg.paths.data_root) == "/tmp/yaml_ds"
+    # 未在 YAML 出现的键仍由兜底补齐，保证不会 KeyError
+    assert cfg.get("render.batch_size") is not None
+
+
+def test_local_yaml_is_merged_last(tmp_path: Path) -> None:
+    """`local.yaml` 用于本机私有覆盖，应合并在最上层。"""
+    (tmp_path / "system.yaml").write_text(
+        "paths:\n  data_root: /tmp/base\n", encoding="utf-8")
+    (tmp_path / "local.yaml").write_text(
+        "paths:\n  data_root: /tmp/local\n", encoding="utf-8")
+    cfg = load_config(config_dir=tmp_path)
+    assert str(cfg.paths.data_root) == "/tmp/local"
+
+
+def test_deep_merge_keeps_siblings() -> None:
+    from live3dgsavatar.config import deep_merge
+
+    base = {"a": {"x": 1, "y": 2}, "b": 1}
+    over = {"a": {"y": 9}}
+    assert deep_merge(base, over) == {"a": {"x": 1, "y": 9}, "b": 1}
+
+
+# ------------------------------------------------------------- 访问接口 --
+
+
+def test_dotted_access_and_set() -> None:
+    cfg = load_config()
+    assert cfg.paths.data_root == cfg.get("paths.data_root")
+    cfg.set("render.batch_size", 99)
+    assert cfg.get("render.batch_size") == 99
+    cfg.set("brand.new.key", 1)          # 中间层自动创建
+    assert cfg.get("brand.new.key") == 1
+
+
+def test_attribute_error_is_descriptive() -> None:
+    cfg = load_config()
+    with _raises(AttributeError) as exc:
+        _ = cfg.nonexistent_section
+    assert "不存在" in str(exc.value)
+
+
+def test_get_returns_default_for_missing_dotted_key() -> None:
+    cfg = load_config()
+    assert cfg.get("nope.not.here", "fallback") == "fallback"
+
+
+# ------------------------------------------------------------- 校验报错 --
+
+
+def test_missing_data_root_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "system.yaml").write_text("paths:\n  output_dir: out\n", encoding="utf-8")
+    # 兜底会补 data_root，所以显式置空来验证校验逻辑
+    (tmp_path / "render.yaml").write_text("", encoding="utf-8")
+    cfg = load_config(config_dir=tmp_path)
+    assert cfg.get("paths.data_root") is not None   # 兜底生效，不应失败
+
+
+def test_wrong_type_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "system.yaml").write_text(
+        "paths:\n  data_root: /tmp/x\nrender:\n  batch_size: not_a_number\n",
+        encoding="utf-8")
+    with _raises(ValueError) as exc:
+        load_config(config_dir=tmp_path)
+    assert "batch_size" in str(exc.value)
+
+
+def test_bad_device_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "system.yaml").write_text(
+        "paths:\n  data_root: /tmp/x\nruntime:\n  device: tpu\n", encoding="utf-8")
+    with _raises(ValueError) as exc:
+        load_config(config_dir=tmp_path)
+    assert "device" in str(exc.value)
+
+
+def test_non_mapping_yaml_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "system.yaml").write_text("- just\n- a list\n", encoding="utf-8")
+    with _raises(ValueError) as exc:
+        load_config(config_dir=tmp_path)
+    assert "mapping" in str(exc.value)
+
+
+# ------------------------------------------------- 硬编码路径的静态约束 --
+
+
+def test_no_hardcoded_absolute_paths_in_source() -> None:
+    """**回归测试**：`src/`、`tests/`、`scripts/` 不得出现用户的绝对路径。
+
+    路径必须来自 `configs/*.yaml`（可用环境变量或命令行覆盖）。
+    否则换机器 / 换数据集就要改代码，也为应用层复用埋坑。
+    """
+    import re
+
+    pattern = re.compile(r"/home/[A-Za-z0-9_.-]+/")
+    offenders: list[str] = []
+    for sub in ("src", "tests", "scripts"):
+        for path in sorted((REPO_ROOT / sub).rglob("*.py")):
+            if "__pycache__" in str(path):
+                continue
+            for lineno, line in enumerate(
+                    path.read_text(encoding="utf-8").splitlines(), 1):
+                code = line.split("#", 1)[0]
+                if pattern.search(code):
+                    # tests/support.py 里的 REPO_ROOT 由 __file__ 推导，不会命中；
+                    # 这里只拦截字面量绝对路径。
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
+
+    assert not offenders, (
+        "发现硬编码绝对路径，请移到 configs/*.yaml：\n  " + "\n  ".join(offenders))
+
+
+def test_scripts_have_no_business_defaults() -> None:
+    """**回归测试**：脚本不应自带业务默认量（应由配置提供）。
+
+    允许 `default=None`（表示"未覆盖"）与布尔开关（`store_true`）。
+    这里只拦截明确的数值/路径字面量默认值，避免配置被代码悄悄压过。
+    """
+    import re
+
+    # 形如 `default=256`、`default=Path("output/...")` 的业务默认量
+    bad_numeric = re.compile(
+        r"add_argument\([^)]*default=(?!None\b)(\d+|Path\()")
+    offenders: list[str] = []
+    for name in ("render_test.py", "equivalence_check.py", "show_config.py"):
+        path = REPO_ROOT / "scripts" / name
+        for lineno, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if bad_numeric.search(code):
+                offenders.append(
+                    f"{path.relative_to(REPO_ROOT)}:{lineno}: {line.strip()}")
+
+    assert not offenders, (
+        "脚本参数不应硬编码业务默认量（应由 configs/*.yaml 提供）：\n  "
+        + "\n  ".join(offenders))

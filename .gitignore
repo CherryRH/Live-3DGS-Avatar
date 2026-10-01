@@ -16,6 +16,9 @@ build/
 dist/
 *.so
 
+# ---- 本机私有配置（覆盖 configs/*.yaml，不入库）----
+configs/local.yaml
+
 # ---- 数据与权重（体积大 / 涉许可，勿入库）----
 data/*
 !data/.gitkeep

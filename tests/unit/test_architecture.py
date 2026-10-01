@@ -277,3 +277,100 @@ def test_no_undefined_names_across_project() -> None:
         walk(table)
 
     assert not problems, "存在未定义名字：\n  " + "\n  ".join(problems)
+
+
+def test_call_sites_match_function_signatures() -> None:
+    """**静态检查**：对本项目模块级函数的调用，其关键字参数必须存在于签名中。
+
+    这类错误（参数名写错、重构时改了签名）只在**运行时**才炸，而
+    `py_compile` 查不出、`--dry-run` 也未必覆盖到那条分支。
+    曾真实发生：`load_scene` 的 `device` 参数在重构中被删掉，
+    函数体里仍在用，直到用户执行渲染测试才 `NameError`。
+
+    为避免误报，只检查：
+    - **模块级**函数（排除类方法，避免 `to(device=)` / `to(dtype=)` 这类同名冲突）
+    - 以裸名 `f(...)` 调用的（排除 `obj.method(...)`）
+    - 名字在本项目内唯一
+
+    Args:
+        无
+    """
+    import ast
+    import builtins
+
+    def project_files():
+        for sub in ("src", "tests", "scripts"):
+            for f in (REPO_ROOT / sub).rglob("*.py"):
+                if "__pycache__" not in str(f):
+                    yield f
+
+    files = list(project_files())
+
+    # 索引模块级函数名 → 参数集合（仅名字唯一的才检查）
+    by_name: dict[str, list[set[str]]] = {}
+    has_var_kw: dict[str, bool] = {}
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            a = node.args
+            names = {x.arg for x in a.posonlyargs + a.args + a.kwonlyargs}
+            by_name.setdefault(node.name, []).append(names)
+            has_var_kw[node.name] = has_var_kw.get(node.name, False) or a.kwarg is not None
+
+    builtin_names = set(dir(builtins))
+    problems: list[str] = []
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+                continue
+            name = node.func.id
+            if name in builtin_names or name not in by_name:
+                continue
+            if len(by_name[name]) != 1 or has_var_kw.get(name):
+                continue
+            known = next(iter(by_name[name]))
+            passed = {k.arg for k in node.keywords if k.arg is not None}
+            unknown = passed - known
+            if unknown:
+                problems.append(
+                    f"{path.relative_to(REPO_ROOT)}:{node.lineno} "
+                    f"{name}(...) 传入未知参数 {sorted(unknown)}；"
+                    f"签名参数 {sorted(known)}")
+
+    assert not problems, "存在与签名不匹配的调用：\n  " + "\n  ".join(problems)
+
+
+def test_no_tautological_assertions() -> None:
+    """**静态检查**：不得出现恒真/恒假的断言。
+
+    形如 `assert x or True, ""` 或 `assert True` 的断言是**假的安全感** ——
+    看起来在检查，实际永不失败。曾真实残留一条。
+    """
+    import ast
+
+    offenders: list[str] = []
+    for sub in ("src", "tests", "scripts"):
+        for path in sorted((REPO_ROOT / sub).rglob("*.py")):
+            if "__pycache__" in str(path):
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Assert):
+                    continue
+                test = node.test
+                # `... or True` / `True and ...`
+                if (isinstance(test, ast.BoolOp)
+                        and any(isinstance(v, ast.Constant) and v.value is True
+                                for v in test.values)
+                        and isinstance(test.op, (ast.Or, ast.And))):
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT)}:{node.lineno} "
+                        f"恒真断言（含 True 的 {type(test.op).__name__}）")
+                elif isinstance(test, ast.Constant) and test.value is True:
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT)}:{node.lineno} `assert True`")
+
+    assert not offenders, "存在恒真断言：\n  " + "\n  ".join(offenders)

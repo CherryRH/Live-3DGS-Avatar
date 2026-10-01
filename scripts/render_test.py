@@ -57,29 +57,43 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 #    若等 `main()` 里才 import 本项目，顺序就反了（曾因此报
 #    `cannot import name 'int' from 'numpy'`）。
 import live3dgsavatar  # noqa: E402, F401  （勿删：导入即生效）
-
-DEFAULT_DATA_ROOT = Path("/home/crh/Datasets/INSTA")
+from live3dgsavatar.config import Config, load_config  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="统一渲染测试（core vs 参照 vs 数据集原图）")
-    p.add_argument("--subject", default="duda")
-    p.add_argument("--output-dir", type=Path, default=Path("output/render_test"))
-    p.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT,
-                   help="数据集根；GT 图为 <root>/<subject>/images/")
-    p.add_argument("--reference", type=Path, default=Path("/home/crh/Projects/RGBAvatar"))
+    """命令行参数 = **对配置文件的覆盖层**。
+
+    任何参数不传时都用 `configs/*.yaml` 的值；这里不设业务默认量
+    （默认量集中在配置文件，见 docs/CONFIG.md）。
+    """
+    p = argparse.ArgumentParser(
+        description="统一渲染测试（core vs 参照 vs 数据集原图）",
+        epilog="默认值来自 configs/system.yaml 与 configs/render.yaml；"
+               "用 python scripts/show_config.py 查看实际生效值。")
+    p.add_argument("--config-dir", type=Path, default=None,
+                   help="配置目录；默认仓库根的 configs/")
+    p.add_argument("--subject", default=None, help="数据集主体名，覆盖配置的 subject")
+    p.add_argument("--output-dir", type=Path, default=None,
+                   help="产物根目录；默认 <paths.output_dir>/render_test")
+    p.add_argument("--data-root", type=Path, default=None,
+                   help="数据集根目录，覆盖 paths.data_root")
+    p.add_argument("--reference", type=Path, default=None,
+                   help="参照仓库（只读），覆盖 paths.reference_root")
     p.add_argument("--ply", type=Path, default=None,
-                   help="默认 <reference>/output/<subject>/test/model.ply")
-    p.add_argument("--frames", type=int, default=20, help="-1 表示全部")
-    p.add_argument("--batch-size", type=int, default=10,
-                   help="**两边共用**的批大小（对齐后计时口径才一致；6GB 显存建议 ≤4）")
-    p.add_argument("--tex-size", type=int, default=256)
-    p.add_argument("--num-basis-in", type=int, default=129)
-    p.add_argument("--num-basis-blend", type=int, default=20)
-    p.add_argument("--mlp-hidden", type=int, nargs="*", default=[128, 128])
-    p.add_argument("--white-bg", action="store_true")
-    p.add_argument("--dump-diff", action="store_true",
-                   help="额外输出并排对比图（core|reference|dataset）")
+                   help="模型 .ply，覆盖 paths.model_ply")
+    p.add_argument("--frames", type=int, default=None,
+                   help="渲染帧数；-1 表示全部（默认 render.frames）")
+    p.add_argument("--batch-size", type=int, default=None,
+                   help="**两边共用**的批大小（默认 render.batch_size）")
+    p.add_argument("--tex-size", type=int, default=None,
+                   help="UV 纹理边长（默认 model.network.tex_size）")
+    p.add_argument("--num-basis-in", type=int, default=None)
+    p.add_argument("--num-basis-blend", type=int, default=None)
+    p.add_argument("--mlp-hidden", type=int, nargs="+", default=None)
+    p.add_argument("--white-bg", action="store_true", default=None,
+                   help="用白底渲染（默认为配置的 render.background）")
+    p.add_argument("--dump-diff", action="store_true", default=None,
+                   help="额外输出并排对比图（默认 test.dump_diff）")
     p.add_argument("--sweep-batch", type=int, nargs="+", default=None,
                    metavar="B",
                    help="额外用这些批大小各跑一次参照，量化批大小的影响"
@@ -104,22 +118,89 @@ def _validate(args: argparse.Namespace) -> None:
         raise SystemExit(f"[error] --sweep-batch 全部必须 ≥ 1，实际 {args.sweep_batch}")
     if args.tex_size < 1:
         raise SystemExit(f"[error] --tex-size 必须 ≥ 1，实际 {args.tex_size}")
+    if len(args.mlp_hidden) == 0:
+        raise SystemExit("[error] --mlp-hidden 不能为空列表（写 null 表示不用 MLP）")
 
 
-def _finalize(args: argparse.Namespace) -> argparse.Namespace:
-    """把相对路径按**调用时的工作目录**绝对化（脚本不会 chdir，但保持一致习惯）。"""
-    args.output_dir = args.output_dir.resolve()
-    args.data_root = args.data_root.resolve()
-    args.reference = args.reference.resolve()
-    args.data = args.data_root / args.subject
-    args.ply = (args.ply or (args.reference / "output" / args.subject / "test"
-                             / "model.ply")).resolve()
-    args.gt_dir = args.data / "images"
+def _finalize(args: argparse.Namespace, cfg: Config) -> argparse.Namespace:
+    """把命令行覆盖合并进配置，并解析出本脚本要用的全部值。
+
+    优先级：命令行 > 环境变量 > configs/*.yaml > 内置兜底（见 load_config）。
+    """
+    # 命令行 → 配置（None 表示用户没传，保留配置值）
+    if args.subject is not None:
+        cfg.set("subject", args.subject)
+    if args.data_root is not None:
+        cfg.set("paths.data_root", Path(args.data_root).expanduser().resolve())
+    if args.reference is not None:
+        cfg.set("paths.reference_root",
+                Path(args.reference).expanduser().resolve())
+    if args.ply is not None:
+        cfg.set("paths.model_ply", Path(args.ply).expanduser().resolve())
+    if args.frames is not None:
+        cfg.set("render.frames", args.frames)
+    if args.batch_size is not None:
+        cfg.set("render.batch_size", args.batch_size)
+    if args.tex_size is not None:
+        cfg.set("model.network.tex_size", args.tex_size)
+    if args.num_basis_in is not None:
+        cfg.set("model.network.num_basis_in", args.num_basis_in)
+    if args.num_basis_blend is not None:
+        cfg.set("model.network.num_basis_blend", args.num_basis_blend)
+    if args.mlp_hidden is not None:
+        cfg.set("model.network.mlp_hidden", args.mlp_hidden)
+    if args.white_bg:
+        cfg.set("render.background", [1.0, 1.0, 1.0])
+    if args.dump_diff:
+        cfg.set("test.dump_diff", True)
+
+    subject = str(cfg.subject)
+    data_root = Path(cfg.paths.data_root)
+    ref_root = cfg.paths.reference_root
+    out_root = args.output_dir
+    if out_root is None:
+        out_root = Path(cfg.paths.output_dir) / "render_test"
+    else:
+        out_root = Path(out_root).expanduser().resolve()
+
+    # 模型路径：配置显式给了就用；否则按参照仓库约定推导
+    model_ply = cfg.get("paths.model_ply")
+    if model_ply is None:
+        if ref_root is None:
+            raise SystemExit(
+                "[error] 未指定模型路径：请设置 paths.model_ply（configs/system.yaml）"
+                "、或 --ply、或提供 paths.reference_root 以便推导")
+        model_ply = (Path(ref_root) / "output" / subject
+                     / str(cfg.get("paths.model_subdir", "test")) / "model.ply")
+    model_ply = Path(model_ply)
+
+    data_dir = data_root / subject
+    args.subject = subject
+    args.data_root = data_root
+    args.data = data_dir
+    args.reference = Path(ref_root) if ref_root is not None else None
+    args.ply = model_ply
+    args.output_dir = out_root
+    args.gt_dir = data_dir / str(cfg.get("paths.image_subdir", "images"))
+    args.frames = int(cfg.get("render.frames", 1))
+    args.batch_size = int(cfg.get("render.batch_size", 1))
+    args.tex_size = int(cfg.get("model.network.tex_size", 256))
+    args.num_basis_in = int(cfg.get("model.network.num_basis_in", 129))
+    args.num_basis_blend = int(cfg.get("model.network.num_basis_blend", 20))
+    hidden = cfg.get("model.network.mlp_hidden")
+    args.mlp_hidden = list(hidden) if hidden else []
+    args.background = [float(x) for x in cfg.get("render.background",
+                                                 [0.0, 0.0, 0.0])]
+    args.sh_degree = int(cfg.get("render.sh_degree", 0))
+    args.scaling_modifier = float(cfg.get("render.scaling_modifier", 1.0))
+    args.use_weight_proj = bool(cfg.get("model.network.use_weight_proj", True))
+    args.split = str(cfg.runtime.split)
+    args.device = str(cfg.runtime.device)
+    args.dump_diff = bool(cfg.get("test.dump_diff", False))
+    args.cfg = cfg
+
     _validate(args)
     return args
-
-
-# ------------------------------------------------------------------ 指标 --
 
 
 def psnr(a: np.ndarray, b: np.ndarray) -> float:
@@ -186,10 +267,9 @@ def render_reference(args, scene, frames: list[int]):
         reference_root=args.reference, src_root=REPO_ROOT / "src",
         data_dir=args.data, ply_path=args.ply, tex_size=args.tex_size,
         num_basis_in=args.num_basis_in, num_basis_blend=args.num_basis_blend,
-        mlp_hidden=tuple(args.mlp_hidden),
+        mlp_hidden=tuple(args.mlp_hidden), split=args.split,
     )
-    bg = torch.tensor([1.0, 1.0, 1.0] if args.white_bg else [0.0, 0.0, 0.0],
-                      dtype=torch.float32, device="cuda")
+    bg = torch.tensor(args.background, dtype=torch.float32, device="cuda")
 
     images: dict[int, np.ndarray] = {}
     per_frame_ms: list[float] = []
@@ -245,12 +325,12 @@ def render_core(args, scene, frames: list[int], out_dir: Path, save: bool = True
 
     cfg = AvatarConfig(tex_size=args.tex_size, num_basis_in=args.num_basis_in,
                        num_basis_blend=args.num_basis_blend,
-                       mlp_hidden=tuple(args.mlp_hidden), use_weight_proj=True)
+                       mlp_hidden=tuple(args.mlp_hidden),
+                       use_weight_proj=args.use_weight_proj)
     avatar = load_ply(args.ply, config=cfg, device="cuda")
     camera = Camera.from_intrinsics_extrinsics(
         K=scene.K, R=scene.R, T=scene.T, width=scene.width, height=scene.height).to("cuda")
-    bg = torch.tensor([1.0, 1.0, 1.0] if args.white_bg else [0.0, 0.0, 0.0],
-                      dtype=torch.float32, device="cuda")
+    bg = torch.tensor(args.background, dtype=torch.float32, device="cuda")
     rasterizer = SimpleRasterizer()
 
     def run_batch(idx: list[int]):
@@ -325,10 +405,12 @@ def load_gt(args, frames: list[int]):
 
 
 def main() -> int:
-    args = _finalize(parse_args())
+    raw = parse_args()
+    if raw.dry_run:
+        # dry-run 也要走完整配置解析，才能顺带验证配置本身
+        return _dry_run(_finalize(raw, load_config(raw.config_dir)))
 
-    if args.dry_run:
-        return _dry_run(args)
+    args = _finalize(raw, load_config(raw.config_dir))
 
     if not torch.cuda.is_available():
         print("[error] 需要 GPU（可用 --dry-run 在 CPU 上自检）")
@@ -342,13 +424,15 @@ def main() -> int:
     print(f"[info] 数据集   : {args.data}")
     print(f"[info] 参照仓库 : {args.reference}")
     print(f"[info] 输出     : {args.output_dir}")
+    print(f"[info] 配置     : {len(args.cfg.as_plain())} 节，"
+          f"批大小={args.batch_size}，帧数={args.frames}，设备={args.device}")
     print(f"[info] 帧数     : {'全部' if args.frames < 0 else args.frames}"
           f"{'  （跳过参照）' if args.skip_reference else ''}")
 
     from reference_scene import load_scene
 
     print("\n[1/4] 加载模板几何与相机…")
-    scene = load_scene(args.data, args.reference, frames=args.frames)
+    scene = load_scene(args.cfg, frames=args.frames)
     if scene.num_frames == 0:
         print("[error] 数据集未提供任何帧")
         return 1
@@ -435,7 +519,8 @@ def main() -> int:
         "subject": args.subject,
         "ply": str(args.ply), "data": str(args.data),
         "frames": len(frames), "resolution": [scene.width, scene.height],
-        "white_bg": args.white_bg,
+        "background": args.background,
+        "config": args.cfg.resolved(),
         "core_perf": core_perf, "reference_perf": ref_perf,
         "reference_batch_sweep": sweep,
         "summary": {k: v.summary() for k, v in acc.items()},
@@ -596,7 +681,8 @@ def _dry_run(args) -> int:
 
     cfg = AvatarConfig(tex_size=args.tex_size, num_basis_in=args.num_basis_in,
                        num_basis_blend=args.num_basis_blend,
-                       mlp_hidden=tuple(args.mlp_hidden), use_weight_proj=True)
+                       mlp_hidden=tuple(args.mlp_hidden),
+                       use_weight_proj=args.use_weight_proj)
     avatar = load_ply(args.ply, config=cfg, device="cpu")
     print(f"  avatar      N={avatar.num_gaussians}, K={avatar.num_basis}")
 
@@ -655,7 +741,8 @@ def _dry_run(args) -> int:
     import argparse as _ap
 
     def _fake(**over):
-        base = dict(batch_size=4, frames=3, sweep_batch=None, tex_size=256)
+        base = dict(batch_size=4, frames=3, sweep_batch=None, tex_size=256,
+                    mlp_hidden=[128, 128])
         base.update(over)
         return _ap.Namespace(**base)
 
@@ -664,7 +751,8 @@ def _dry_run(args) -> int:
                      (dict(batch_size=-1), "batch_size<0"),
                      (dict(frames=0), "frames=0"),
                      (dict(sweep_batch=[0]), "sweep_batch 含 0"),
-                     (dict(tex_size=0), "tex_size=0")):
+                     (dict(tex_size=0), "tex_size=0"),
+                     (dict(mlp_hidden=[]), "mlp_hidden 空列表")):
         try:
             _validate(_fake(**bad))
         except SystemExit:

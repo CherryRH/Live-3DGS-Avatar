@@ -7,6 +7,9 @@
 
 ## 0. 本文档的边界
 
+配套文档：`docs/CONFIG.md`（配置项）、`docs/CONVENTIONS.md`（数值约定）、
+`docs/CORE_GUIDE.md`（代码导览）、`docs/ENVIRONMENT.md`（环境）、`docs/MIGRATION.md`（与参照的差异）。
+
 **目标**：定义一个**足够简单、可落地、可扩展**的工程架构，把 RGBAvatar 的算法能力内化成本项目自己的代码，并支撑后续的视频通话场景扩展。
 
 **明确不做**（本阶段）：
@@ -146,7 +149,7 @@ Live3DGSAvatar/
 │   ├── ENVIRONMENT.md           ← 环境搭建、版本矩阵、排错（P0 已完成）
 │   ├── CONVENTIONS.md           ← 坐标系与数值约定（P1 产出）
 │   └── MIGRATION.md             ← 与 RGBAvatar 的行为差异清单（P1 产出）
-├── configs/                     ← 当前为空；P1 落地 offline.yaml / online.yaml
+├── configs/                     ← system.yaml / render.yaml（见 docs/CONFIG.md）
 ├── src/live3dgsavatar/
 │   ├── core/
 │   │   ├── types.py             # GaussianSet / Mesh / Camera / Frame / RenderOutput
@@ -162,7 +165,7 @@ Live3DGSAvatar/
 │   │       ├── rasterizer.py    # Rasterizer 协议 + 两个实现
 │   │       └── camera_utils.py  # 矩阵转置/列主序转换的唯一入口
 │   ├── data/                    # P2（INSTA 格式读取、local-global 采样池）
-│   ├── training/                # P2（离线 / 在线训练循环、损失）
+│   ├── training/                # 待接入（不自研，见 ARCHITECTURE §6）
 │   ├── tracking/                # P4（Tracker 协议 + 离线 metrical-tracker 适配）
 │   ├── runtime/                 # P2/P3（AvatarRuntime 门面、服务端会话）
 │   ├── streaming/               # P3（编码/传输）
@@ -180,7 +183,7 @@ Live3DGSAvatar/
 │   ├── run_tests.py             # 零依赖测试运行器（未装 pytest 也能跑）
 │   ├── support.py               # 参照加载与比较工具
 │   ├── reference_scene.py       # 参照侧几何/相机适配（脚本用，不属 core）
-│   ├── unit/                    # 单测（48 项，全部无需 GPU）
+│   ├── unit/                    # 单测（67 项，全部无需 GPU）
 │   └── equivalence/             # 数值等价门（stages.py + GPU 测试）
 ├── scripts/
 │   ├── setup_env.sh             # 一键建环境（幂等）—— P0
@@ -252,49 +255,23 @@ error: could not delete 'build/lib.linux-x86_64-cpython-310/nvdiffrast/__init__.
 
 ---
 
-## 6. 训练管线
+## 6. 训练管线 —— **待接入**
 
-### 6.1 离线训练（`training/offline.py`）
+> **本项目的训练部分不自研、也不复刻 RGBAvatar。**
+> 预训练由另一位同学的工作提供，未来以清晰接口接入。
 
-```
-DataLoader(batch=10)
-  └─ Frame{mesh, blend_weight, camera, image, mask}
-        │
-        ├─ blend:  weight[B,129] ─MLP→ w[B,20] ─linear_blending→ GaussianSet(tangent)
-        │          ⚠ blend_start_iter 之前 skip，仅用基态
-        ├─ bind:   GaussianSet(tangent) + Mesh → GaussianSet(world)
-        ├─ render: BatchRasterizer(world, Camera, bg, target_image) → RenderOutput
-        ├─ loss:   L1(颜色) [+ SSIM + LPIPS + alpha + sparsity + orth，按 config 开关]
-        ├─ backward + Adam.step
-        └─ fast_forward: 用 est_color/est_weight 一次性写入 color_dc
-```
+因此本节只定义**接入点**，不描述内部实现：
 
-关键超参对齐 `configs/offline.yaml`：`blend_start_iter=3000`、`use_fast_forward=True`、`random_bg_color=True`、`position_lr_max_steps=30000`、`iteration=50000`。
-
-### 6.2 在线/流式训练（`training/online.py`）
-
-与离线共用 `blend/bind/rasterize/losses`，**唯一区别是数据来源与采样策略**：
-
-```
-新帧到达 ──► 加入 local pool M_l (FIFO, cap=150)
-              └ 溢出时 ──► reservoir sampling 进 global pool M_g (cap=1000)
-每步采样 B 个样本，其中 70% 来自 M_l，30% 来自 M_g
-```
-
-参数：`local_pool_max_size=150`, `global_pool_max_size=1000`, `max_global_ratio=0.7`。
-
-> **架构上的关键认识**：在线训练与离线训练的差异**只是采样器**，`GaussianAvatar` 与渲染器完全复用。因此 `training/offline.py` 与 `online.py` 应共享同一个 `TrainStep` 实现，只在 `Iterable[Frame]` 的来源上分叉。
-
-### 6.3 损失函数
-
-| 损失 | 触发条件 | 实现来源 |
+| 接入点 | 契约 | 状态 |
 |---|---|---|
-| L1 颜色 | `lambda_l1 > 0` | 自实现 |
-| SSIM | `lambda_ssim > 0` | 自实现（单目）/ `fused_ssim`（多视角） |
-| LPIPS | `lambda_lpips > 0` 且 `iter > 20000` | `lpips` |
-| alpha | `lambda_alpha > 0` | 自实现 |
-| sparsity | `lambda_sparsity > 0` 且 `use_weight_proj` | 自实现（MLP 输出 L1） |
-| orth | `lambda_orth > 0` 且已启用 blend | 自实现（基正交性） |
+| 模型产物 | `.ply` + `comment gaussian_config {...}` 自描述结构 | ✅ 已定义，见 `docs/CONVENTIONS.md` §4 |
+| 模型读取 | `core/io/ply.py::load_ply` → `GaussianAvatar` | ✅ 可用（当前消费参照仓库产出的模型） |
+| 驱动参数 | `[B, D]` 张量，`D = model.network.num_basis_in` | ✅ 已定义 |
+| 渲染接口 | `AvatarRuntime`（见 §7.1） | ⏳ P2 提供 |
+| 训练产物落盘 | 同上 `.ply` 约定 | ⏳ 待对方确认 |
+
+**当前阶段**：直接使用数据集与**已有模型**即可，不需要训练。
+`src/live3dgsavatar/training/` 目录保留为空占位，接入时再填充。
 
 ---
 
@@ -387,7 +364,7 @@ class Session:
 |---|---|---|---|
 | **P0 基线与环境** | 环境可复现 + 基线可复现 | ① 单条命令从零建环境 ② `scripts/env_check.py` 全绿 ③ 用 `duda` 的 `model.ply` 跑通渲染并记录 **FPS / 峰值显存 / 单帧耗时** | ✅ 全部完成 |
 | **P1 只读内核重写** | `core/` 完成，行为与 RGBAvatar 一致 | **数值等价门**：分层比对参照实现，中间属性 `max\|Δ\| < 1e-5`，渲染图 **`PSNR > 60 dB` 或 `max\|Δ\| < 1e-3`**；`tests/equivalence/` 全绿 | ✅ **已验收**（见 9.2） |
-| **P2 训练重写 + GUI** | 离线训练复现 + 图形化程序 | ① 在 `duda` 上 PSNR 与论文差距 **< 1 dB** ② GUI 可启动训练、实时预览、导出 | 未开始 |
+| **P2 应用层 + GUI** | 图形化程序；训练接入点就位 | ① 能读取已有模型并实时预览 ② 训练按 §6 的接入点预留，**待接入**（不自研） | 未开始 |
 | **P3 服务化** | 服务端渲染 + 推流 | 端到端延迟 **< 150 ms**（目标 100 ms）；单路稳定 10 分钟 | 未开始 |
 | **P4 动态更新** | 在线训练 | 按帧顺序在线重建，PSNR 与离线差距 **< 1 dB** | 未开始 |
 
@@ -403,7 +380,7 @@ class Session:
 | `core/types.py` · `core/avatar.py` · `core/io/ply.py` | ✅ 类型契约、参数容器、PLY 互操作 |
 | `core/deform/{tbn,bind,blend,binding}.py` | ✅ TBN / 绑定 / 混合 / UV 绑定构建 |
 | `core/render/{camera_utils,rasterizer}.py` | ✅ 矩阵边界 + 两个光栅化后端 |
-| `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**48 项**，全部无需 GPU |
+| `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**67 项**，全部无需 GPU |
 | `tests/equivalence/` · `scripts/equivalence_check.py` | ✅ 等价门（分层比对 + 前置检查） |
 | `scripts/render_test.py` | ✅ 统一渲染测试：core vs 参照 vs 数据集原图（含 CPU dry-run） |
 
@@ -430,7 +407,7 @@ class Session:
 | 峰值显存 | 106 MiB |
 | 参照基线 | 6.94 ms/帧（144 FPS）·峰值 1648 MiB（batch=10 预分配） |
 
-**③ 单元测试** —— `python tests/run_tests.py`：**48 通过 / 0 失败 / 1 跳过**（跳过项为需 GPU 的等价测试）。
+**③ 单元测试** —— `python tests/run_tests.py`：**67 通过 / 0 失败 / 1 跳过**（跳过项为需 GPU 的等价测试）。
 
 > **性能说明**：89 FPS vs 参照 144 FPS 的差距来自 `deform` 走纯 PyTorch
 > （`linear_blending` 默认不用 CUDA 内核、TBN 每帧全量重算）。这是**有意识的取舍**：
@@ -447,11 +424,12 @@ class Session:
 | CUDA 隔离 | `diff_gaussian_rasterization` 只允许在 `core/render/rasterizer.py` 与 `core/deform/blend.py` 出现 |
 | 无 I/O | `core/` 不得 import `argparse` / `sys`；`plyfile` / `json` 仅限 `core/io/ply.py` |
 | 导入期无设备访问 | `core/` 模块作用域不得调用 `torch.cuda.*`（否则无 GPU 环境下导入即失败） |
+| 配置来源 | 脚本参数无业务默认量、代码无硬编码路径（`tests/unit/test_config.py`） |
 | 无未定义名字 | 全项目静态检查（AST 模块绑定 + `symtable` 词法/闭包解析），覆盖只在 GPU 上跑的分支 |
 | 兼容补丁顺序 | 加载参照实现的模块必须在模块层 `import live3dgsavatar`（否则 chumpy ImportError，见 `ENVIRONMENT.md` §3.10） |
 | FLAME dtype | 不得覆盖 `FlameConfig.dtype`（float64 是刻意的，见 `ENVIRONMENT.md` §3.11） |
 
-**「导入 `core` 不需要 GPU」** 这一性质尤其重要：CPU 侧的 48 项测试才得以成立。
+**「导入 `core` 不需要 GPU」** 这一性质尤其重要：CPU 侧的 67 项测试才得以成立。
 
 ### 9.4 等价门的执行结构
 

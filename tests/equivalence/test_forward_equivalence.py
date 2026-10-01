@@ -14,18 +14,23 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 import torch
 
+from live3dgsavatar.config import load_config
 from support import REFERENCE_ROOT, REPO_ROOT
 
-# 预训练模型与数据集：可用环境变量覆盖
-PLY = Path(os.environ.get(
-    "LIVE3DGS_EQUIV_PLY", REFERENCE_ROOT / "output" / "duda" / "test" / "model.ply"))
-DATA = Path(os.environ.get("LIVE3DGS_EQUIV_DATA", "/home/crh/Datasets/INSTA/duda"))
+# 路径一律来自配置（configs/system.yaml），**此处不硬编码**。
+# 换数据集/模型只需改配置，或设 LIVE3DGS_DATA_ROOT / LIVE3DGS_REFERENCE_ROOT。
+_CFG = load_config()
+_SUBJECT = str(_CFG.subject)
+_DATA_ROOT = Path(_CFG.paths.data_root)
+PLY = Path(_CFG.get("paths.model_ply") or (
+    (Path(REFERENCE_ROOT) / "output" / _SUBJECT
+     / str(_CFG.get("paths.model_subdir", "test")) / "model.ply")))
+DATA = _DATA_ROOT / _SUBJECT
 
 
 def _require_environment() -> None:
@@ -35,9 +40,9 @@ def _require_environment() -> None:
     if not REFERENCE_ROOT.is_dir():
         pytest.skip(f"参照仓库不存在：{REFERENCE_ROOT}（用 RGBA_REF 指定）")
     if not PLY.exists():
-        pytest.skip(f"预训练模型不存在：{PLY}（用 LIVE3DGS_EQUIV_PLY 指定）")
+        pytest.skip(f"预训练模型不存在：{PLY}（检查 configs/system.yaml 的 paths.model_ply）")
     if not DATA.is_dir():
-        pytest.skip(f"数据集不存在：{DATA}（用 LIVE3DGS_EQUIV_DATA 指定）")
+        pytest.skip(f"数据集不存在：{DATA}（检查 configs/system.yaml 的 paths.data_root）")
 
 
 def test_forward_pass_matches_reference() -> None:

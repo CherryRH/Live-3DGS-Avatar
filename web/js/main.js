@@ -1,0 +1,259 @@
+/**
+ * 入口：装配 client / view / controls，并维护状态。
+ *
+ * 三种数据源共用一个接口（`send(msg)` + `config`/`frame`/`status` 事件）：
+ *   - `RenderClient`：真实 WebSocket 后端
+ *   - `MockSource`  ：本地 mock（后端未就绪）
+ * 因此下面的装配逻辑对两者完全一致。
+ *
+ * 启动参数（URL query）：
+ *   ?mock=1  强制 mock      ?mock=0  强制连后端     默认：先试后端，失败则 mock
+ */
+
+import { RenderClient } from "./client.js";
+import { MockSource } from "./mock.js";
+import { FrameView } from "./view.js";
+import { Controls } from "./controls.js";
+
+const el = {
+  canvas: document.querySelector("#canvas"),
+  overlay: document.querySelector("#overlay"),
+  overlayText: document.querySelector("#overlay-text"),
+  connDot: document.querySelector("#conn-dot"),
+  connText: document.querySelector("#conn-text"),
+  fps: document.querySelector("#stat-fps"),
+  frame: document.querySelector("#stat-frame"),
+  deform: document.querySelector("#stat-deform"),
+  raster: document.querySelector("#stat-raster"),
+  dropped: document.querySelector("#stat-dropped"),
+  mem: document.querySelector("#stat-mem"),
+  mockNote: document.querySelector("#mock-note"),
+};
+
+const view = new FrameView(el.canvas);
+
+/** mock 源；非 null 表示当前用的是 mock。 */
+let mock = null;
+/** 真实客户端；非 null 表示正在连后端。 */
+let client = null;
+/** 当前数据源（client 或 mock），二者接口一致。 */
+let source = null;
+
+let paused = false;
+let backendTried = false;
+
+// ------------------------------------------------------------------ 显示 --
+
+function setConn(state, text) {
+  el.connDot.className = "dot " + ({
+    open: "dot--on",
+    connecting: "dot--wait",
+    retrying: "dot--wait",
+    closed: "dot--off",
+  }[state] ?? "dot--off");
+  el.connText.textContent = text;
+}
+
+function showOverlay(text) {
+  if (text === null) {
+    el.overlay.hidden = true;
+    return;
+  }
+  el.overlay.hidden = false;
+  el.overlayText.textContent = text;
+}
+
+function updateStats(status) {
+  if (typeof status.fps === "number") {
+    el.fps.textContent = status.fps > 0 ? status.fps.toFixed(0) : "0";
+  }
+  const ms = status.ms ?? {};
+  if (typeof ms.frame === "number" && ms.frame > 0) {
+    el.frame.textContent = ms.frame.toFixed(2);
+  }
+  if (typeof ms.deform === "number" && ms.deform > 0) {
+    el.deform.textContent = `${ms.deform.toFixed(2)}`;
+  }
+  if (typeof ms.rasterize === "number" && ms.rasterize > 0) {
+    el.raster.textContent = `${ms.rasterize.toFixed(2)}`;
+  }
+  if (typeof status.peak_memory_mib === "number" && status.peak_memory_mib > 0) {
+    el.mem.textContent = status.peak_memory_mib.toFixed(0);
+  }
+  if (typeof status.paused === "boolean") {
+    paused = status.paused;
+    controls.setPaused(paused);
+  }
+}
+
+// ------------------------------------------------------------------ 控件 --
+
+const controls = new Controls(document, {
+  onParams(msg) {
+    source?.send(msg);
+  },
+  onLoadModel({ subject, work_name }) {
+    if (mock) {
+      controls.showModelError("mock 模式下不能切换模型（请先连后端）");
+      return;
+    }
+    fetch("/api/model", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ subject, work_name }),
+    })
+      .then(async (resp) => {
+        const body = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(body.error ?? `HTTP ${resp.status}`);
+        controls.applyState(body);
+        showOverlay(null);
+      })
+      .catch((err) => controls.showModelError(`加载失败：${err.message}`));
+  },
+  onPause(next) {
+    paused = next;
+    controls.setPaused(paused);
+    source?.send({ type: "stream", paused });
+  },
+  onCapture() {
+    const name = `snapshot-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    if (mock) {
+      // mock 不走后端，直接本地下载
+      view.toBlob().then((blob) => {
+        if (!blob) return;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = `${name}.png`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      });
+      return;
+    }
+    source?.send({ type: "capture", name });
+  },
+  onReconnect() {
+    if (mock) { restartMock(); return; }
+    client?.close();
+    client = null;
+    connectToBackend();
+  },
+});
+
+// ------------------------------------------------------------- 数据源装配 --
+
+/** 把 `config` / `frame` / `status` 事件接到 view 与控件上。 */
+function wireSource(src, { isMock }) {
+  src.addEventListener("config", (ev) => {
+    const g = ev.detail;
+    view.resize(g.width, g.height, g.channels ?? 3);
+    if (g.numFrames) controls.setFrameRange(g.numFrames);
+    if (Array.isArray(g.background)) {
+      controls.applyState({ render: { background: g.background } });
+    }
+    showOverlay(null);
+    el.mockNote.hidden = !isMock;
+  });
+
+  src.addEventListener("frame", (ev) => {
+    try {
+      view.draw(ev.detail);
+    } catch (err) {
+      console.error("[main] 绘制失败：", err);
+      showOverlay(`绘制失败：${err.message}`);
+    }
+    if (src.dropped !== undefined) el.dropped.textContent = String(src.dropped);
+  });
+
+  src.addEventListener("status", (ev) => updateStats(ev.detail));
+  src.addEventListener("captured", (ev) => {
+    console.info("[main] 已截取：", ev.detail.path);
+  });
+}
+
+function startMock(reason) {
+  mock?.stop();
+  client?.close();
+  client = null;
+
+  mock = new MockSource();
+  source = mock;
+  wireSource(mock, { isMock: true });
+  mock.start();
+
+  setConn("open", `mock（${reason}）`);
+  // mock 没有 /api/state，用 config 里给的默认值
+  controls.applyState({
+    subject: document.querySelector("#f-subject").value,
+    work_name: document.querySelector("#f-work-name").value,
+    render: { background: [0, 0, 0], scaling_modifier: 1, scale: 1, target_fps: 60 },
+    dataset: { num_frames: 254 },
+  });
+  controls.showModelError("mock：无真实模型信息");
+}
+
+function restartMock() {
+  startMock("手动重连");
+}
+
+function connectToBackend() {
+  backendTried = true;
+  showOverlay("正在连接后端…");
+
+  // 先取 /api/state 初始化控件；失败则回退 mock
+  fetch("/api/state")
+    .then((r) => {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    })
+    .then((state) => controls.applyState(state))
+    .catch((err) => console.warn("[main] /api/state 不可用：", err.message));
+
+  client = new RenderClient();
+  source = client;
+  wireSource(client, { isMock: false });
+
+  client.addEventListener("state", (ev) => {
+    const s = ev.detail.state;
+    if (s === "open") setConn("open", "已连接");
+    else if (s === "connecting") setConn("connecting", "连接中…");
+    else if (s === "retrying") setConn("retrying", "重连中…");
+    else setConn("closed", "已断开");
+  });
+
+  client.addEventListener("error", (ev) => {
+    showOverlay(`连接失败：${ev.detail.error.message}`);
+  });
+
+  client.addEventListener("retry", (ev) => {
+    // 重试两次仍不通 ⟹ 判定后端未启动，切 mock（避免无限刷日志）
+    if (ev.detail.attempt >= 2 && !mock) {
+      client.close();
+      startMock("后端未响应");
+    }
+  });
+
+  client.connect();
+}
+
+// -------------------------------------------------------------------- 启动 --
+
+const params = new URLSearchParams(location.search);
+const forceMock = params.get("mock") === "1";
+const forceBackend = params.get("mock") === "0";
+
+// 页面由 file:// 打开时不可能连后端，直接 mock
+const isFileProtocol = location.protocol === "file:";
+
+if (forceMock || isFileProtocol) {
+  startMock(forceMock ? "?mock=1" : "file:// 打开");
+} else if (forceBackend) {
+  connectToBackend();
+} else {
+  // 默认：先试后端，失败自动回退（见 retry 处理）
+  connectToBackend();
+}
+
+window.addEventListener("beforeunload", () => {
+  client?.close();
+  mock?.stop();
+});

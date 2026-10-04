@@ -203,6 +203,8 @@ weights [B,K]  ×  base [N,·] + Σ_k weights[:,k] · basis[k] [K,N,·]
 | 渲染链路的形状/约定 + 指标函数 + 参数校验 + 摘要打印 | `scripts/render_test.py --dry-run` | 否 |
 | 全项目无未定义名字（含 GPU-only 分支） | `tests/unit/test_architecture.py` | 否 |
 | 配置是否指对路径 | `scripts/show_config.py` | 否 |
+| GPU 上单帧耗时分解 | `scripts/profile_deform.py` | **是** |
+| GUI 前端（协议/绘制/控件） | `node web/tests/all.mjs` | 否 |
 | 参照管线的性能基线 | `output/render_test/report.json` | 已采集 |
 
 全部不需要 GPU 的测试：

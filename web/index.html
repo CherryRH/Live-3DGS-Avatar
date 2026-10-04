@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live3DGSAvatar · 实时预览</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>Live3DGSAvatar</h1>
+  <div class="conn">
+    <span id="conn-dot" class="dot dot--off" title="连接状态"></span>
+    <span id="conn-text">未连接</span>
+  </div>
+  <div class="spacer"></div>
+  <div class="stats" id="stats">
+    <span><b id="stat-fps">–</b> FPS</span>
+    <span><b id="stat-frame">–</b> ms/帧</span>
+    <span>deform <b id="stat-deform">–</b></span>
+    <span>raster <b id="stat-raster">–</b></span>
+    <span>丢帧 <b id="stat-dropped">0</b></span>
+    <span>显存 <b id="stat-mem">–</b> MiB</span>
+  </div>
+</header>
+
+<main>
+  <section class="stage">
+    <canvas id="canvas" width="512" height="512"></canvas>
+    <div class="stage-overlay" id="overlay">
+      <p id="overlay-text">等待连接…</p>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <details open>
+      <summary>模型</summary>
+      <div class="fields">
+        <label>subject<input id="f-subject" type="text" value="duda"></label>
+        <label>work_name<input id="f-work-name" type="text" value="test"></label>
+        <button id="btn-load">加载模型</button>
+        <p class="hint" id="model-info">–</p>
+      </div>
+    </details>
+
+    <details open>
+      <summary>渲染</summary>
+      <div class="fields">
+        <label>背景色
+          <select id="f-bg">
+            <option value="0,0,0">黑</option>
+            <option value="1,1,1">白</option>
+            <option value="0.5,0.5,0.5">灰</option>
+          </select>
+        </label>
+        <label>缩放系数 <output id="o-scaling">1.00</output>
+          <input id="f-scaling" type="range" min="0.2" max="2" step="0.05" value="1">
+        </label>
+        <label>分辨率比例 <output id="o-scale">100%</output>
+          <input id="f-scale" type="range" min="0.25" max="1" step="0.05" value="1">
+        </label>
+        <label>目标帧率 <output id="o-fps">60</output>
+          <input id="f-fps" type="range" min="5" max="120" step="5" value="60">
+        </label>
+      </div>
+    </details>
+
+    <details open>
+      <summary>驱动参数</summary>
+      <div class="fields">
+        <label>来源
+          <select id="f-drive-mode">
+            <option value="dataset">数据集帧</option>
+            <option value="random">随机扰动</option>
+          </select>
+        </label>
+        <label>数据集帧 <output id="o-frame">0</output>
+          <input id="f-frame" type="range" min="0" max="253" step="1" value="0">
+        </label>
+        <label>循环播放 <input id="f-play" type="checkbox"></label>
+        <label>扰动幅度 <output id="o-amp">0.10</output>
+          <input id="f-amp" type="range" min="0" max="0.5" step="0.01" value="0.1">
+        </label>
+      </div>
+    </details>
+
+    <details>
+      <summary>操作</summary>
+      <div class="fields">
+        <button id="btn-pause">暂停</button>
+        <button id="btn-capture">截取当前帧</button>
+        <button id="btn-reconnect">重连</button>
+      </div>
+    </details>
+
+    <p class="hint" id="mock-note" hidden>
+      <b>mock 模式</b>：后端未连接，画面由前端本地生成，仅用于验证界面。
+      启动后端后刷新即可看到真实渲染。
+    </p>
+  </aside>
+</main>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

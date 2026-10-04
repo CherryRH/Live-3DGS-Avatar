@@ -37,6 +37,67 @@
 > P1 期间曾把**绑定位置项**误判为「有意偏离」，已作废 —— 本项目与参照在此处一致，
 > 那只是本项目自己的 bug。见 D 节 #4/#6。
 
+## B.1 性能：纯 PyTorch 侧的写法陷阱（2026-02 实测）
+
+关注点是**为什么 core 比参照慢**。结论：**主因不是"没用 CUDA 内核"，而是 PyTorch 写法**。
+
+### 端到端耗时分解（CPU，N=60353，K=20，F=10032）
+
+| 环节 | 优化前 | 优化后 | 说明 |
+|---|---|---|---|
+| `linear_blending`（3 个属性） | 6.71 ms | **3.08 ms** | 见下 |
+| 面 TBN | 4.09 ms（全量 F） | **2.83 ms**（仅 F_used=6986） | 省 30.4% 的未引用面 |
+| `matrix_to_quaternion` | 3.48 ms | 3.38 ms | 去掉 `nonzero`，CPU 未变快，**GPU 上应受益于消除同步** |
+| `quaternion_multiply` | 1.58 ms | 1.58 ms | 未动 |
+| offset / gather / matmul | ~1.3 ms | ~1.3 ms | 未动 |
+| **`deform` 合计** | **~19.2 ms** | **~14.4 ms** | −25% |
+
+### 三个已修的具体问题
+
+**① `linear_blending` 物化中间张量（最大单项，省 3.6 ms）**
+
+```python
+# 慢：先物化 [B, K, N, ·]（K=20、N=60353 时 13.8 MiB）再求和
+(w[:, :, None, ...] * basis[None]).sum(dim=1)
+
+# 快：把 K 维做成一次收缩
+torch.tensordot(weights, flat_basis, dims=([1], [0]))
+```
+
+实测 **1.88 ms → 0.59 ms／属性（3.2×）**。
+数值差异约 3.8e-06（float32 求和顺序），**远低于本层 1e-5 判据**。
+逐位一致从来不是该层的契约 —— 参照实现自身在 CUDA 版与 Python 回退版之间也有同类差异。
+
+**② `MeshBinder` 每帧重建，导致面索引缓存失效（我自己引入的回退）**
+
+引入"只算被引用面"优化时，`_face_index` 的缓存依赖 `MeshBinder` 实例存活；
+而 `deform()` 每帧调 `build_binder()` 新建实例 → **缓存每帧失效**，
+`torch.unique`（2.1 ms）每帧重跑，比不优化还慢。
+修法：`build_binder()` 复用同一实例。
+回归测试：`test_build_binder_reuses_instance`、
+`test_face_index_cache_is_not_recomputed_per_frame`。
+
+**③ `matrix_to_quaternion` 里的 `torch.nonzero`（GPU 同步点）**
+
+`nonzero` 的输出形状依赖数据，**强制 device→host 同步**。
+改为一次算四个 Shepperd 候选、按判据 gather 选取，完全向量化。
+⚠️ 判据必须与参照一致（不能改成"选范数最大的候选"——非正交矩阵下会选到不同分支，
+与参照不再一致；实测只有 82.9% 分支相同）。
+
+### 仍未处理的瓶颈
+
+| 项 | 量级 | 备注 |
+|---|---|---|
+| `quaternion_multiply` | 1.58 ms | 可并入四元数向量化路径 |
+| 其余 PyTorch 算子 | ~4 ms | 需 GPU 上实测才能判断是否值得 |
+| CUDA 内核（`linear_blending` / `mesh_binding`） | — | 参照走内核；本项目默认纯 PyTorch（见 H4）。**注意 CUDA 内核在设备不可用时静默返回全零** |
+
+> **待 GPU 验证**：以上全是 CPU 数据。GPU 与 CPU 的性能特征差异很大
+> （`nonzero` 的同步代价在 GPU 上显著更高，而逐元素算子相对更便宜）。
+> 需要用户跑一次 `render_test.py` 才能确认结论是否迁移。
+
+---
+
 ## C. 持续关注
 
 | 编号 | 事项 | 现状 |

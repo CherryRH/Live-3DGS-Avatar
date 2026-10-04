@@ -347,3 +347,54 @@ def test_batched_deform_equals_per_frame_deform() -> None:
     # 用例必须真的在跑多个不同的帧，否则测不出批量维度的问题
     spread = max(float((mesh.verts[i] - mesh.verts[0]).abs().max()) for i in range(b))
     assert spread > 1e-3, "各帧网格应不同，否则用例失去意义"
+
+
+def test_build_binder_reuses_instance() -> None:
+    """**回归测试**：`build_binder()` 必须返回**同一个**实例。
+
+    `MeshBinder` 内部缓存了「去重后的绑定面 + 反查索引」（纯模板依赖）。
+    若每次调用都新建实例，该缓存每帧失效，`torch.unique` 就会每帧重跑
+    （CPU 上约 2 ms）—— **比不做该优化还慢**。
+    曾真实发生：`deform()` 每帧调 `build_binder()`，导致优化变成回退。
+    """
+    avatar = _tiny_avatar()
+    first = avatar.build_binder()
+    second = avatar.build_binder()
+    assert first is second, (
+        "build_binder() 每次返回新实例会让 MeshBinder 的面索引缓存失效，"
+        "务必复用同一实例")
+
+
+def test_face_index_cache_is_not_recomputed_per_frame() -> None:
+    """面索引缓存必须命中：同一 binder 多次 bind 不应重跑 `torch.unique`。"""
+    import torch as _torch
+
+    from live3dgsavatar.core.types import GaussianSet
+
+    avatar = _tiny_avatar()
+    binder = avatar.build_binder()
+    mesh = _tiny_mesh(b=1)
+    gs = GaussianSet(
+        xyz=_torch.zeros(1, avatar.num_gaussians, 3),
+        rotation=_torch.tensor([[[1.0, 0, 0, 0]]]).repeat(1, avatar.num_gaussians, 1),
+        scaling=_torch.ones(1, avatar.num_gaussians, 3),
+        opacity=_torch.ones(1, avatar.num_gaussians, 1),
+        color=_torch.zeros(1, avatar.num_gaussians, 1, 3),
+        space="tangent")
+
+    calls = {"n": 0}
+    real_unique = _torch.unique
+
+    def counting_unique(*a, **kw):
+        calls["n"] += 1
+        return real_unique(*a, **kw)
+
+    _torch.unique = counting_unique
+    try:
+        for _ in range(5):
+            binder.bind(gs, mesh)
+    finally:
+        _torch.unique = real_unique
+
+    assert calls["n"] <= 1, (
+        f"5 次 bind 触发了 {calls['n']} 次 torch.unique；面索引缓存未生效")

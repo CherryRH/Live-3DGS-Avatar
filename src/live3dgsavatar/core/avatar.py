@@ -167,7 +167,18 @@ class GaussianAvatar(nn.Module):
         )
 
     def build_binder(self) -> MeshBinder:
-        return MeshBinder(self.to_binding())
+        """返回绑定器。
+
+        **同一实例会被复用**：`MeshBinder` 内部缓存了「去重后的绑定面 + 反查索引」
+        （纯模板依赖）。若每次调用都新建实例，该缓存每帧都会失效，
+        `torch.unique` 就会每帧重跑一次（CPU 上约 2 ms）—— 那比不做优化还慢。
+        `deform()` 每帧都会取一次 binder，因此这里必须缓存。
+        """
+        cached = getattr(self, "_binder_cache", None)
+        if cached is None:
+            cached = MeshBinder(self.to_binding())
+            self._binder_cache = cached                 # type: ignore[attr-defined]
+        return cached
 
     # ---------------------------------------------------------------- 前向 --
     def deform(

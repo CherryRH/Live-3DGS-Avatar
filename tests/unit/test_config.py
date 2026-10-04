@@ -396,3 +396,51 @@ def test_cli_accepts_rgba_avatar_underscore_style() -> None:
     # 单段参数与下划线值不被误改
     assert normalize(["--dry-run"]) == ["--dry-run"]
     assert normalize(["--ply", "/a/b_c/model.ply"]) == ["--ply", "/a/b_c/model.ply"]
+
+
+def test_render_test_guards_image_access_for_no_save() -> None:
+    """**回归测试**：`--no-save` 下不得对空图像字典取值。
+
+    `--no-save` 跳过 D2H 拷贝，`core_imgs` / `ref_imgs` 保持为空。
+    对比循环曾直接 `core_imgs[i]`，于是 `KeyError: 0` —— 而那发生在
+    渲染与计时**全部跑完之后**，白白浪费一次完整运行。
+
+    检查方式：对 `main()` 做 AST 作用域分析，找出每个 `core_imgs[...]` /
+    `ref_imgs[...]` 所在的最近 `if` 条件，要求其中出现 `has_core` / `has_ref`
+    或对 `*_imgs` 的成员判断。
+    """
+    import ast
+
+    path = REPO_ROOT / "scripts" / "render_test.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+    main_fn = next((n for n in tree.body
+                    if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+    assert main_fn is not None, "render_test.py 应有一个 main()"
+
+    # 收集每个"图像取值"节点 → 其所有外层 If 的条件源码
+    problems: list[str] = []
+    targets = {"core_imgs", "ref_imgs"}
+
+    def cond_source(test: ast.AST) -> str:
+        return ast.unparse(test)
+
+    def visit(node: ast.AST, guards: list[str]) -> None:
+        if isinstance(node, ast.If):
+            guards = guards + [cond_source(node.test)]
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+            if node.value.id in targets:
+                blob = " ".join(guards)
+                ok = ("has_core" in blob or "has_ref" in blob
+                      or "core_imgs" in blob or "ref_imgs" in blob)
+                if not ok:
+                    problems.append(
+                        f"{path.name}:{node.lineno} {node.value.id}[...] "
+                        f"未被 has_core / has_ref 守卫（外层条件：{guards or '无'}）")
+        for child in ast.iter_child_nodes(node):
+            visit(child, guards)
+
+    for stmt in main_fn.body:
+        visit(stmt, [])
+
+    assert not problems, "\n  ".join(["存在未守卫的图像取值："] + problems)

@@ -169,7 +169,7 @@ Live3DGSAvatar/
 │   ├── tracking/                # P4（Tracker 协议 + 离线 metrical-tracker 适配）
 │   ├── runtime/                 # P2/P3（AvatarRuntime 门面、服务端会话）
 │   ├── streaming/               # P3（编码/传输）
-│   ├── app/                     # P2（CLI / GUI）
+│   ├── app/                     # P2（GUI 后端：FastAPI + uvicorn；待做）
 │   └── compat/
 │       └── __init__.py          # 第三方兼容补丁（numpy 2.x 别名等）
 ├── submodules/                  ← 全部 vendored，统一从此处构建
@@ -191,6 +191,7 @@ Live3DGSAvatar/
 │   ├── render_test.py           # 统一渲染测试：core vs 参照 vs 数据集原图 —— P1
 │   ├── equivalence_check.py     # 数值等价验收门（与参照逐层比对）—— P1
 │   └── _compat_shim.py          # 独立脚本用的精简兼容补丁
+├── web/                         # GUI 前端（无构建步骤，原生 ES modules）—— 已完成
 ├── models/                      # 本项目模型（<模型名>/<工作名>/model.ply，gitignore）
 ├── data/                        # 输入资产（gitignore）
 │   └── FLAME2020/               # generic_model.pkl / flame_uv.npz / eyelid
@@ -366,7 +367,7 @@ class Session:
 |---|---|---|---|
 | **P0 基线与环境** | 环境可复现 + 基线可复现 | ① 单条命令从零建环境 ② `scripts/env_check.py` 全绿 ③ 用 `duda` 的 `model.ply` 跑通渲染并记录 **FPS / 峰值显存 / 单帧耗时** | ✅ 全部完成 |
 | **P1 只读内核重写** | `core/` 完成，行为与 RGBAvatar 一致 | **数值等价门**：分层比对参照实现，中间属性 `max\|Δ\| < 1e-5`，渲染图 **`PSNR > 60 dB` 或 `max\|Δ\| < 1e-3`**；`tests/equivalence/` 全绿 | ✅ **已验收**（见 9.2） |
-| **P2 应用层 + GUI** | 图形化程序；训练接入点就位 | ① 能读取已有模型并实时预览 ② 训练按 §6 的接入点预留，**待接入**（不自研） | 未开始 |
+| **P2 应用层 + GUI** | 图形化程序；训练接入点就位 | ① 能读取已有模型并实时预览 ② 训练按 §6 的接入点预留，**待接入**（不自研） | 前端 ✅ / **后端待做**（协议见 `docs/GUI_PROTOCOL.md`） |
 | **P3 服务化** | 服务端渲染 + 推流 | 端到端延迟 **< 150 ms**（目标 100 ms）；单路稳定 10 分钟 | 未开始 |
 | **P4 动态更新** | 在线训练 | 按帧顺序在线重建，PSNR 与离线差距 **< 1 dB** | 未开始 |
 
@@ -484,6 +485,20 @@ P0 基线与环境 ──► P1 只读内核重写 ──► P2 训练重写 + G
 ---
 
 ## 附录 A：未来工作（本阶段不做，仅记录）
+
+### A.0 性能：接入 `mesh_binding` CUDA 内核（已评估，暂不做）
+
+| 项 | 内容 |
+|---|---|
+| 现状 | deform 约 3.4 ms/帧，其中 `matrix_to_quaternion` + `quaternion_multiply` 占 65%（1.91 ms）。整帧 5.96 ms（167.7 FPS），参照 2.36 ms（424 FPS） |
+| 根因 | 四元数运算每元素 14–17 ns，**远超算术需求**（应为 ~2-3 ns）。原因是产生 30+ 个中间张量；参照的 `mesh_binding.cu` 用**一个 kernel** 全做完 |
+| 方案 | 直接用已 vendored 的 `diff_gaussian_rasterization.mesh_binding` 替换纯 PyTorch 绑定。**这不是重写 CUDA**，内核已编译好，只是从"PyTorch 复现其数学"改成"直接调用" |
+| 预期 | deform 3.4 → ~0.3 ms，整帧 5.96 → ~2.7 ms（**约 370 FPS**） |
+| 难度 | 中（约 1–2 小时 + 验证） |
+| 风险 | 低：数值等价由等价门当场验证；保留纯 PyTorch 路径作开关。⚠️ 需显式设备检查（同类 CUDA 算子曾静默返回全零） |
+| 为何暂不做 | 167 FPS 已远超显示器刷新率；`rasterize` 的 ~2.1 ms 是参照也付的成本，**上限只到 ~450 FPS**，收益有限 |
+
+
 
 | 方向 | 说明 | 触发条件 |
 |---|---|---|

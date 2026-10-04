@@ -19,7 +19,7 @@
 | **模型接入** | 读取合作方产出的预训练模型并驱动渲染 | 待接入 |
 | **动态更新** | 流式到达的新帧可持续优化模型 | 待定 |
 | **服务端渲染** | 渲染在服务端完成，客户端只需接收视频流 | P3 |
-| **图形化程序** | 实时预览、模型加载与导出 | P2 |
+| **图形化程序** | 实时预览、参数实时调节 | 前端 ✅ / 后端待做 |
 
 ## 技术要点
 
@@ -90,7 +90,15 @@ python scripts/equivalence_check.py \
     --ply <PATH>/model.ply --data <DATA_DIR> --frames 3
 ```
 
-> GUI 的命令将在 P2 完成后启用；训练由合作方提供（见 `docs/ARCHITECTURE.md` §6）。
+GUI 前端可独立预览（mock 模式，无需后端）：
+
+```bash
+cd web && python3 -m http.server 8912   # 浏览器打开 http://127.0.0.1:8912
+node web/tests/all.mjs                  # 前端自检
+```
+
+> GUI 后端（FastAPI + uvicorn）待做，协议见 [`docs/GUI_PROTOCOL.md`](docs/GUI_PROTOCOL.md)。
+> 训练由合作方提供（见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §6）。
 
 ## 文档
 
@@ -101,11 +109,13 @@ python scripts/equivalence_check.py \
 | [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md) | 坐标 / 矩阵 / 空间 / 精度约定（数值问题的权威来源） |
 | [`docs/MIGRATION.md`](docs/MIGRATION.md) | 与参照实现的全部差异登记 |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | **配置说明**：路径、渲染参数、优先级、如何改 |
+| [`docs/GUI_PROTOCOL.md`](docs/GUI_PROTOCOL.md) | GUI 前后端协议（HTTP + WebSocket） |
 | [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) | 环境搭建、版本矩阵、排错 |
 
 ## 目录
 
 ```
+web/           GUI 前端（无构建步骤，原生 ES modules）
 models/        本项目使用的模型（<模型名>/<工作名>/model.ply，见下）
 src/           项目源码（core/ 已完成；data/training/runtime 为后续阶段）
 scripts/       环境搭建、自检、等价门、渲染出图

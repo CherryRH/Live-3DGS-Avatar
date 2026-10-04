@@ -539,3 +539,95 @@ def test_mesh_binder_uses_R_not_transpose() -> None:
     assert d_T > 1e-3, (
         f"用例中 R·x 与 Rᵀ·x 差异过小（{d_T:.3e}），无法验证用的是哪一种；"
         "请增大 UV 剪切")
+
+
+def test_matrix_to_quaternion_matches_branchwise_reference() -> None:
+    """**回归测试**：向量化 `matrix_to_quaternion` 必须与旧的分支式实现**逐位一致**。
+
+    改动动机：旧实现用 `torch.nonzero` 取分支下标，而 `nonzero` 的
+    输出形状依赖数据，会强制 GPU 同步，在逐帧路径上是明显开销。
+    新实现一次算四个 Shepperd 候选、各自归一化后取范数最大者，完全向量化。
+
+    ⚠️ 本测试必须**覆盖全部四个分支**，否则可能"某些分支恰好对"而漏掉错误
+    （改动过程中我曾连续三次写错分支公式，单分支用例都通过）。
+    """
+    from live3dgsavatar.core.deform.bind import (
+        _matrix_to_quaternion_branchwise as branchwise,
+        matrix_to_quaternion as vectorized,
+    )
+
+    def quat_to_matrix(q: torch.Tensor) -> torch.Tensor:
+        q = torch.nn.functional.normalize(q, dim=-1)
+        a, b, c, d = q.unbind(-1)
+        return torch.stack([
+            torch.stack([1 - 2 * (c * c + d * d), 2 * (b * c - a * d), 2 * (b * d + a * c)], -1),
+            torch.stack([2 * (b * c + a * d), 1 - 2 * (b * b + d * d), 2 * (c * d - a * b)], -1),
+            torch.stack([2 * (b * d - a * c), 2 * (c * d + a * b), 1 - 2 * (b * b + c * c)], -1),
+        ], -2)
+
+    # ---- 1) 四类"使某个分支成为最大"的定向构造 ----
+    branch_cases = {
+        "迹最大": [[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]],
+        "m00 最大": [[1.0, 0, 0], [0, -1.0, 0], [0, 0, -1.0]],
+        "m11 最大": [[-1.0, 0, 0], [0, 1.0, 0], [0, 0, -1.0]],
+        "m22 最大": [[-1.0, 0, 0], [0, -1.0, 0], [0, 0, 1.0]],
+    }
+    seen_choices = set()
+    for name, rows in branch_cases.items():
+        r = torch.tensor(rows, dtype=torch.float64).unsqueeze(0)
+        got, ref = vectorized(r), branchwise(r)
+        d = float((got - ref).abs().max())
+        fs = float((got + ref).abs().max())
+        assert min(d, fs) < 1e-12, f"{name} 分支不一致：max|Δ| = {d:.3e}"
+
+    # ---- 2) 大规模随机旋转：统计实际覆盖到的分支数 ----
+    torch.manual_seed(0)
+    q = torch.randn(20000, 4)
+    m = quat_to_matrix(q)
+
+    diag = torch.stack([m[:, 0, 0], m[:, 1, 1], m[:, 2, 2]], dim=1)
+    trace = m[:, 0, 0] + m[:, 1, 1] + m[:, 2, 2]
+    choices = torch.cat([diag, trace.unsqueeze(1)], dim=1).argmax(dim=1)
+    seen_choices = set(choices.tolist())
+    assert len(seen_choices) == 4, (
+        f"只覆盖了 {len(seen_choices)} 个分支 {sorted(seen_choices)}，"
+        "测试不足以发现分支错误")
+
+    got, ref = vectorized(m), branchwise(m)
+    # 四元数与 -q 表示同一旋转，故按逐元素比较，允许两者都不一致时按整体取反
+    d = float((got - ref).abs().max())
+    fs = float((got + ref).abs().max())
+    assert min(d, fs) < 1e-12, f"随机批次不一致：max|Δ| = {d:.3e}"
+
+    # ---- 3) 非正交输入（真实 TBN 就不是正交阵）----
+    from live3dgsavatar.core.deform.tbn import compute_face_tbn
+
+    v, fcount = 400, 300
+    verts = torch.randn(1, v, 3) * 0.1
+    faces = torch.randint(0, v, (fcount, 3), dtype=torch.int32)
+    uvs = torch.rand(v, 2)
+    tbn = compute_face_tbn(verts[:, faces], uvs[faces])[0]
+
+    # ⚠️ 随机面里会混进**退化三角形**（UV 面积为 0）→ `f = 1/denom = inf`
+    #    → `inf * 0 = NaN`。此时 TBN 本身就是 NaN，不是四元数转换的问题。
+    #    这里只对**有限**输入断言逐位一致。
+    #    （退化面的 NaN 是独立隐患，见 docs/MIGRATION.md O2；真实 duda 数据未触发。）
+    finite = torch.isfinite(tbn).all(dim=(-1, -2))
+    assert int(finite.sum()) > 0, "用例应至少包含一些有限面"
+    clean = tbn[finite]
+    got, ref = vectorized(clean), branchwise(clean)
+    d = float((got - ref).abs().max())
+    fs = float((got + ref).abs().max())
+    assert min(d, fs) < 1e-12, f"非正交输入不一致：max|Δ| = {d:.3e}"
+
+    # NaN 输入下两种实现应给出**相同**的结果（都 NaN），即行为一致
+    if int((~finite).sum()) > 0:
+        a, b = vectorized(tbn), branchwise(tbn)
+        assert bool(torch.equal(torch.isnan(a), torch.isnan(b))), (
+            "NaN 输入下两种实现的 NaN 位置应一致")
+
+    # ---- 4) 形状与规范化 ----
+    assert vectorized(torch.eye(3).expand(5, 3, 3)).shape == (5, 4)
+    nrm = vectorized(m).norm(dim=-1)
+    assert torch.allclose(nrm, torch.ones_like(nrm), atol=1e-6), "输出应为单位四元数"
+    assert seen_choices == {0, 1, 2, 3}

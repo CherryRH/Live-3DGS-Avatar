@@ -119,6 +119,11 @@ def parse_args() -> argparse.Namespace:
                    metavar="B",
                    help="额外用这些批大小各跑一次参照，量化批大小的影响"
                         "（参照的 render_gs_batch 是串行循环，理论上每帧成本不变）")
+    p.add_argument("--no-save", action="store_true",
+                   help="不落盘 PNG，也不做 GPU→CPU 拷贝。"
+                        "用于**干净的性能测量**：PNG 编码与 D2H 拷贝"
+                        "（每帧 2-4 ms）会掩盖渲染本身的耗时。"
+                        "注意：此模式下不产出对比图，指标仍照常计算。")
     p.add_argument("--skip-reference", action="store_true",
                    help="只测 core vs dataset（不加载参照实现）")
     p.add_argument("--dry-run", action="store_true", help="CPU 自检，不访问数据集/GPU")
@@ -276,8 +281,11 @@ class Accum:
 # ------------------------------------------------------------------ 渲染 --
 
 
-def render_reference(args, scene, frames: list[int]):
-    """用参照实现渲染并返回 `{frame_index: HxWx3 uint8}`。"""
+def render_reference(args, scene, frames: list[int], keep_images: bool = True):
+    """用参照实现渲染并返回 `{frame_index: HxWx3 uint8}`。
+
+    `keep_images=False` 时跳过 D2H 拷贝（干净测量）。
+    """
     from equivalence.reference_pipeline import build_reference, reference_render
 
     # 参照实现用**它自己的同名模型**（output/<subject>/<work_name>/model.ply），
@@ -324,6 +332,8 @@ def render_reference(args, scene, frames: list[int]):
         torch.cuda.synchronize()
         dt = (time.perf_counter() - t0) * 1000.0
         per_frame_ms.extend([dt / len(chunk)] * len(chunk))
+        if not keep_images:
+            continue
         arr = (color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte().cpu().numpy()
         for j, i in enumerate(chunk):
             images[i] = arr[j]
@@ -338,12 +348,17 @@ def render_reference(args, scene, frames: list[int]):
     }
 
 
-def render_core(args, scene, frames: list[int], out_dir: Path, save: bool = True):
+def render_core(args, scene, frames: list[int], out_dir: Path,
+                share_dir: Path | None = None):
     """用本项目 `core/` 渲染。
 
     **批大小与参照对齐**（都用 `args.batch_size`）。两边都是「批内逐帧」的语义
     ——参照的 `render_gs_batch` 也是个 `for i in range(bs)` 串行循环 ——
     所以对齐批大小后，计时口径才真正一致。
+
+    Args:
+        share_dir: 非 ``None`` 时把每帧 PNG 落盘到该目录并返回图像数组；
+            ``None``（`--no-save`）时**跳过 D2H 拷贝与编码**，只做渲染与计时。
     """
     from live3dgsavatar.core.avatar import AvatarConfig
     from live3dgsavatar.core.io import load_ply
@@ -375,8 +390,6 @@ def render_core(args, scene, frames: list[int], out_dir: Path, save: bool = True
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
 
-    from PIL import Image
-
     images: dict[int, np.ndarray] = {}
     per_frame_ms: list[float] = []
     for start in range(0, len(frames), args.batch_size):
@@ -388,11 +401,18 @@ def render_core(args, scene, frames: list[int], out_dir: Path, save: bool = True
         dt = (time.perf_counter() - t0) * 1000.0
         per_frame_ms.extend([dt / len(chunk)] * len(chunk))
 
+        if share_dir is None:
+            # 干净测量：连 D2H 拷贝都不做。
+            # ⚠️ 计时窗口虽只包住 run_batch，但窗口**之前**的 `.cpu()`
+            #    会同步等待尚未完成的内核；不跳过它测不出渲染本身的耗时。
+            continue
+
+        from PIL import Image
+
         arr = (out.color.clamp(0, 1).permute(0, 2, 3, 1) * 255).byte().cpu().numpy()
         for j, i in enumerate(chunk):
             images[i] = arr[j]
-            if save:
-                Image.fromarray(arr[j]).save(out_dir / f"{i:05d}.png")
+            Image.fromarray(arr[j]).save(share_dir / f"{i:05d}.png")
 
     return images, {
         "mean_ms_per_frame": float(np.mean(per_frame_ms)),
@@ -482,18 +502,21 @@ def main() -> int:
             p.unlink()
 
     print(f"\n[2/4] 用 core/ 渲染 {len(frames)} 帧…")
-    core_imgs, core_perf = render_core(args, scene, frames, img_dir)
+    core_imgs, core_perf = render_core(
+        args, scene, frames, img_dir, share_dir=None if args.no_save else img_dir)
     print(f"       {core_perf['mean_ms_per_frame']:.2f} ms/帧，"
           f"{core_perf['fps']:.1f} FPS，峰值 {core_perf['peak_memory_mib']:.0f} MiB")
 
     ref_imgs, ref_perf = None, None
     if not args.skip_reference:
         print(f"\n[3/4] 用参照实现渲染 {len(frames)} 帧（batch={args.batch_size}）…")
-        ref_imgs, ref_perf = render_reference(args, scene, frames)
-        from PIL import Image
+        ref_imgs, ref_perf = render_reference(args, scene, frames,
+                                              keep_images=not args.no_save)
+        if not args.no_save:
+            from PIL import Image
 
-        for i, arr in ref_imgs.items():
-            Image.fromarray(arr).save(ref_dir / f"{i:05d}.png")
+            for i, arr in ref_imgs.items():
+                Image.fromarray(arr).save(ref_dir / f"{i:05d}.png")
         print(f"       {ref_perf['mean_ms_per_frame']:.2f} ms/帧，"
               f"{ref_perf['fps']:.1f} FPS，峰值 {ref_perf['peak_memory_mib']:.0f} MiB")
     else:
@@ -519,22 +542,30 @@ def main() -> int:
     }
     per_frame: list[dict] = []
 
+    # ⚠️ `--no-save` 下不保留图像（core_imgs / ref_imgs 为空），
+    #    此时**无法**做任何 PSNR 对比 —— 必须显式跳过，而不是 KeyError。
+    has_core = bool(core_imgs)
+    has_ref = bool(ref_imgs)
+    if not has_core:
+        print("       [--no-save] 未保留图像，跳过全部 PSNR 对比"
+              "（本模式只用于干净的性能测量）")
+
     for i in frames:
         row: dict = {"frame": i}
-        if ref_imgs is not None and i in ref_imgs:
+        if has_core and has_ref and i in ref_imgs:
             d = max_abs_diff(core_imgs[i], ref_imgs[i])
             p = psnr(core_imgs[i], ref_imgs[i])
             acc["core_vs_ref_psnr"].add(p)
             acc["core_vs_ref_maxdiff"].add(d)
             row.update(core_vs_ref_psnr=p, core_vs_ref_maxdiff=d)
-        if gt is not None and i in gt:
+        if has_core and gt is not None and i in gt:
             g_rgb, g_mask = gt[i]
             p = psnr(core_imgs[i], g_rgb)
             pm = psnr_masked(core_imgs[i], g_rgb, g_mask)
             acc["core_vs_gt_psnr"].add(p)
             acc["core_vs_gt_psnr_masked"].add(pm)
             row.update(core_vs_gt_psnr=p, core_vs_gt_psnr_masked=pm)
-            if ref_imgs is not None and i in ref_imgs:
+            if has_ref and i in ref_imgs:
                 p2 = psnr(ref_imgs[i], g_rgb)
                 pm2 = psnr_masked(ref_imgs[i], g_rgb, g_mask)
                 acc["ref_vs_gt_psnr"].add(p2)
@@ -542,7 +573,7 @@ def main() -> int:
                 row.update(ref_vs_gt_psnr=p2, ref_vs_gt_psnr_masked=pm2)
         per_frame.append(row)
 
-    if args.dump_diff and gt is not None:
+    if args.dump_diff and gt is not None and has_core:
         _dump_diff(out_dir / "diff", frames, core_imgs, ref_imgs, gt)
 
     report = {
@@ -550,6 +581,7 @@ def main() -> int:
         "work_name": args.work_name,
         "ply": str(args.ply), "data": str(args.data),
         "frames": len(frames), "resolution": [scene.width, scene.height],
+        "no_save": bool(args.no_save),
         "background": args.background,
         "config": args.cfg.resolved(),
         "core_perf": core_perf, "reference_perf": ref_perf,
@@ -616,6 +648,8 @@ def _print_summary(report: dict) -> None:
     if s.get("core_vs_ref_psnr"):
         line("PSNR", "core_vs_ref_psnr", "dB")
         line("max|Δ|", "core_vs_ref_maxdiff", "/255", ".1f")
+    elif report.get("no_save"):
+        print("  （--no-save：未保留图像，未做 PSNR 对比）")
     else:
         print("  （已跳过参照渲染）")
 
@@ -623,6 +657,8 @@ def _print_summary(report: dict) -> None:
     if s.get("core_vs_gt_psnr"):
         line("PSNR（全图）", "core_vs_gt_psnr", "dB")
         line("PSNR（mask 内）", "core_vs_gt_psnr_masked", "dB")
+    elif report.get("no_save"):
+        print("  （--no-save：未保留图像，未做 PSNR 对比）")
     else:
         print("  （无 GT 图）")
 

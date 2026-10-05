@@ -1,7 +1,7 @@
 # submodules/ 归属说明
 
 本目录存放**外部源码的 vendored 副本**，不是本项目原创代码。
-三者均由 `scripts/setup_env.sh` 直接构建，**不从 `~/Libraries/` 构建**。
+三者均由 `setup_env.sh` 直接构建，**不从 `~/Libraries/` 构建**。
 
 ## 清单
 

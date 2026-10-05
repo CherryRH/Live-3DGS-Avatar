@@ -62,6 +62,13 @@ _FALLBACK: dict[str, Any] = {
     "paths.models_config": None,
     "paths.image_subdir": "images",
     "runtime.device": "cuda",
+    "app.host": "localhost",
+    "app.port": 8000,
+    "app.target_fps": 60,
+    "app.autostart": True,
+    "app.preload_frames": -1,
+    "app.stats_log_interval_s": 10.0,
+    "app.status_interval_s": 0.25,
     "runtime.split": "all",
     "smoke.max_frames": None,
     "render.background": [0.0, 0.0, 0.0],
@@ -275,6 +282,22 @@ def _validate(cfg: Config) -> None:
             raise ValueError(
                 f"配置项 {key} 应为 {expect.__name__}，实际 "
                 f"{type(value).__name__}（{value!r}）")
+
+    if not isinstance(cfg.get("app.port"), int):
+        raise ValueError(f"app.port 应为 int，实际 {cfg.get('app.port')!r}")
+    if not (1 <= cfg.get("app.port") <= 65535):
+        raise ValueError(f"app.port 越界：{cfg.get('app.port')}")
+    if int(cfg.get("app.target_fps", 0)) < 0:
+        raise ValueError(f"app.target_fps 不能为负：{cfg.get('app.target_fps')}")
+    sti = float(cfg.get("app.status_interval_s", 0.25))
+    if sti <= 0:
+        raise ValueError(f"app.status_interval_s 必须 > 0，实际 {sti}")
+    si = float(cfg.get("app.stats_log_interval_s", 10.0))
+    if si <= 0:
+        raise ValueError(f"app.stats_log_interval_s 必须 > 0，实际 {si}")
+    pf = int(cfg.get("app.preload_frames", -1))
+    if pf == 0 or pf < -1:
+        raise ValueError(f"app.preload_frames 应为 -1（全部）或 ≥ 1，实际 {pf}")
 
     if cfg.get("runtime.device") not in ("cuda", "cpu"):
         raise ValueError(

@@ -104,7 +104,7 @@ def main() -> int:
     print(f"[info] 数据集 : {args.data}")
     print(f"[info] 设备   : {torch.cuda.get_device_name(0)}")
 
-    from reference_scene import load_scene
+    from live3dgsavatar.data.scene import load_scene
     from live3dgsavatar.core.avatar import AvatarConfig
     from live3dgsavatar.core.deform.bind import (
         matrix_to_quaternion, quaternion_multiply)

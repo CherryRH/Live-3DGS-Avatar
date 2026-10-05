@@ -56,7 +56,7 @@ def test_forward_pass_matches_reference() -> None:
     from live3dgsavatar.core.deform import build_binding
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.types import Camera, Mesh
-    from equivalence.reference_pipeline import build_reference, reference_uv_rast
+    from live3dgsavatar.data.reference import build_reference, reference_uv_rast
     from equivalence.stages import (
         EquivalenceReport,
         compare_binding,
@@ -69,7 +69,7 @@ def test_forward_pass_matches_reference() -> None:
     report = EquivalenceReport()
 
     ref = build_reference(
-        reference_root=REFERENCE_ROOT, src_root=REPO_ROOT / "src",
+        reference_root=REFERENCE_ROOT,
         data_dir=DATA, ply_path=PLY)
     cfg = AvatarConfig(tex_size=ref.config["tex_size"],
                        num_basis_in=ref.config["num_basis_in"],

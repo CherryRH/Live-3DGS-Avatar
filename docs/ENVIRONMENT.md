@@ -1,7 +1,7 @@
 # P0 环境搭建与复现
 
 > 目标：一条命令得到一个可复现的、与 P1/P2 兼容的开发环境。
-> **环境配置成功与否，以你执行 `scripts/setup_env.sh` 的结果为准。**
+> **环境配置成功与否，以你执行 `setup_env.sh` 的结果为准。**
 
 ---
 
@@ -31,11 +31,11 @@
 cd ~/Projects/Live3DGSAvatar
 
 # 1) 建环境（推荐：建在 conda 默认位置）
-bash scripts/setup_env.sh
+bash setup_env.sh
 conda activate live3dgs
 
 #    或：建在工作区内（无 ~/miniconda3/envs 写权限时）
-ENV_PREFIX=$PWD/.conda/envs/live3dgs bash scripts/setup_env.sh
+ENV_PREFIX=$PWD/.conda/envs/live3dgs bash setup_env.sh
 conda activate $PWD/.conda/envs/live3dgs
 
 # 2) 环境自检（可单独重跑，无需 GPU）
@@ -149,7 +149,7 @@ pip install -r requirements.txt
 本项目选择修 chumpy 侧，因为它是**唯一不依赖外部索引状态**的做法，也不会因镜像同步策略变化而再次失效。
 
 **遗留限制**：参照仓库 `RGBAvatar/` 的脚本不导入本包，因此在那边直接跑脚本需自行应用同一补丁
-（`scripts/render_test.py` 经由 `tests/reference_scene.py` 加载参照实现，补丁已生效）。
+（`scripts/render_test.py` 经由 `src/live3dgsavatar/data/scene.py` 加载参照实现，补丁已生效）。
 
 **可移除条件**：chumpy 上游发布兼容 numpy 2.x 的版本后，删除该补丁并恢复 numpy pin。
 
@@ -213,7 +213,7 @@ chumpy 0.70 依赖 numpy 已移除的别名（`np.int` / `np.float` / `np.object
 ImportError: cannot import name 'int' from 'numpy'
 ```
 
-`scripts/render_test.py` 与 `tests/reference_scene.py` 都已在模块层显式触发；
+`scripts/render_test.py` 与 `src/live3dgsavatar/data/scene.py` 都已在模块层显式触发；
 由 `tests/unit/test_architecture.py::test_scripts_trigger_compat_before_chumpy`
 静态兜住（该测试已验证：移除那行 import 会立即失败）。
 
@@ -255,7 +255,11 @@ python scripts/env_check.py --strict   # 有警告即返回 1（CI 用）
 光栅化扩展的算子清单**直接从 `ext.cpp` 的 pybind 注册表解析**，不手工维护，
 因此新增算子后自检会自动覆盖，不会与实现漂移。
 
-`scripts/setup_env.sh` 在第 6 步会先做一次同等的扩展校验，失败即中止，
+`setup_env.sh` 会以 `pip install --no-deps -e .` **可编辑安装本项目自身**，
+让 `import live3dgsavatar` 与 `python -m live3dgsavatar.app` 可用。
+必须加 `--no-deps`：torch 与三个 CUDA 扩展有自己的安装顺序。
+
+`setup_env.sh` 在第 6 步会先做一次同等的扩展校验，失败即中止，
 不会把问题留到第 7 步。
 
 ### 4.2 GPU 渲染测试
@@ -285,7 +289,7 @@ python scripts/render_test.py --frames 20
 | `pip install ~/Libraries/fused-ssim` | `pip install submodules/fused-ssim` | 摆脱工作区外路径依赖 |
 | `pip install -r requirements.txt`（RGBAvatar 版） | 本仓库 `requirements.txt`（已补全） | 官方清单缺 `Pillow`、`chumpy`、`scipy` 等实测必需项 |
 | `pip install submodules/diff-gaussian-rasterization` | `pip install -e submodules/diff-gaussian-rasterization` | editable 便于追踪编译产物 |
-| 无 | `scripts/setup_env.sh` + `scripts/env_check.py` + `scripts/render_test.py` | 一条命令可复现 + 可自检 + 可出渲染报告 |
+| 无 | `setup_env.sh` + `scripts/env_check.py` + `scripts/render_test.py` | 一条命令可复现 + 可自检 + 可出渲染报告 |
 | 环境名 `rgbavatar` | 环境名 `live3dgs` | 独立环境，避免与参照仓库互相污染 |
 
 **保留原样的部分**：`TORCH_CUDA_ARCH_LIST=8.6`、`MAX_JOBS/NVCC_THREADS` 限流、`--no-build-isolation`。这些是实测有效的关键设置。
@@ -294,7 +298,7 @@ python scripts/render_test.py --frames 20
 
 ## 6. 验证记录
 
-`scripts/setup_env.sh` 在第 6、7 步会自行校验扩展算子与运行完整自检，无需手工记录。
+`setup_env.sh` 在第 6、7 步会自行校验扩展算子与运行完整自检，无需手工记录。
 渲染与性能报告由 `scripts/render_test.py` 写入 `output/render_test/report.json`。
 
 ---
@@ -323,7 +327,7 @@ python scripts/render_test.py --frames 20
 
 | 文件 | 用途 |
 |---|---|
-| `scripts/setup_env.sh` | 一键建环境（幂等） |
+| `setup_env.sh` | 一键建环境（幂等） |
 | `scripts/env_check.py` | 环境自检（无 GPU 可跑） |
 | `scripts/render_test.py` | 统一渲染测试（core / 参照 / 数据集原图 三方对比） |
 | `requirements.txt` | Python 依赖（版本来自实测环境） |

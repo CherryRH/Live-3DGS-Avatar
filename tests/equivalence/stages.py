@@ -170,7 +170,7 @@ def compare_blend(report: EquivalenceReport, avatar, ref_model,
     """权重投影与 blendshape 线性混合（激活前/后都比）。"""
     from support import compare
 
-    from equivalence.reference_pipeline import (
+    from live3dgsavatar.data.reference import (
         reference_blended_attributes,
         reference_blend_weights,
     )
@@ -213,7 +213,7 @@ def compare_deformed(report: EquivalenceReport, avatar, ref_model,
     """
     from support import compare
 
-    from equivalence.reference_pipeline import reference_deformed_gaussians
+    from live3dgsavatar.data.reference import reference_deformed_gaussians
 
     gs_ref = reference_deformed_gaussians(ref_model, mesh_ref, blend_weight)
     gs_mine = avatar.deform(mesh_mine, blend_weight, use_cuda_kernel=False)
@@ -237,7 +237,7 @@ def compare_render(report: EquivalenceReport, reference_root: Path, camera, ref_
     """渲染输出：`PSNR > 60 dB` 或 `max|Δ| < 1e-3`（与参照判等）。"""
     from support import compare_image
 
-    from equivalence.reference_pipeline import reference_render
+    from live3dgsavatar.data.reference import reference_render
     from live3dgsavatar.core.render import SimpleRasterizer
 
     out_ref = reference_render(reference_root, ref_camera, bg, gs_ref)

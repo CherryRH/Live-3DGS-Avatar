@@ -198,7 +198,7 @@ def main() -> int:
     from live3dgsavatar.core.deform import build_binding
     from live3dgsavatar.core.io import load_ply
     from live3dgsavatar.core.types import Camera, Mesh
-    from equivalence.reference_pipeline import build_reference, reference_uv_rast
+    from live3dgsavatar.data.reference import build_reference, reference_uv_rast
     from equivalence.stages import (
         EquivalenceReport,
         compare_binding,
@@ -213,7 +213,7 @@ def main() -> int:
     # ------------------------------------------------------------ 加载两侧 --
     print("\n[1/6] 加载参照实现…")
     ref = build_reference(
-        reference_root=args.reference, src_root=SRC_ROOT, data_dir=args.data,
+        reference_root=args.reference, data_dir=args.data,
         ply_path=args.ply, tex_size=args.tex_size, num_basis_in=args.num_basis_in,
         num_basis_blend=args.num_basis_blend, mlp_hidden=tuple(args.mlp_hidden),
     )

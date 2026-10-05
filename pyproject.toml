@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "live3dgsavatar"
+version = "0.1.0"
+description = "面向视频通话场景的 3DGS 人体重建 —— 实时、可驱动、可持续更新"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Academic research use" }
+
+# ⚠️ 这里**只列本项目自己的依赖**，刻意不重复 requirements.txt 的内容。
+#
+# 原因：torch / cuda-toolkit / 三个本地 CUDA 扩展都有自己的安装顺序与
+# `--no-build-isolation` 要求（见 docs/ENVIRONMENT.md §2），
+# 让 pip 通过本文件去解析它们会互相打架。
+#
+# 职责划分：
+#   setup_env.sh   ：建环境 → CUDA → torch → requirements.txt → 本地扩展
+#   本文件          ：让 `import live3dgsavatar` 与 `python -m live3dgsavatar.app` 可用
+#                     （即 `pip install -e . --no-deps`）
+#
+# 运行期依赖一律从 requirements.txt 装，所以安装本项目时用 `--no-deps`。
+
+[project.optional-dependencies]
+# 仅 GUI 后端需要；已包含在 requirements.txt 里，此处列出来是为了
+# 让 `pip install -e ".[app]"` 在没有 requirements.txt 时也能工作。
+app = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
+
+[project.scripts]
+live3dgsavatar = "live3dgsavatar.app.server:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# 前端是独立目录（web/），由 app.server 按仓库根定位，**不打包进 wheel**。
+# 这样开发时改前端无需重装。
+"live3dgsavatar" = ["py.typed"]

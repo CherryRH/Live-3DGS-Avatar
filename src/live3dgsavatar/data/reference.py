@@ -1,5 +1,10 @@
 """从参照实现（RGBAvatar）抽取出的「加载 + 前向」管线。
 
+**层次**：这是**数据层**（`data/`）。放在包里（而非 `tests/`）的理由：
+`core/` 与 `app/` 都可能需要读取参照侧的数据集，而 **`src/` 不应依赖 `tests/`**
+（`tests/` 不是包，只能靠 `sys.path` 找到；曾因此 `ModuleNotFoundError: No module named 'tests'`）。
+
+
 **参照仓库为只读**：这里只 import，不修改。
 
 作用：为 `scripts/equivalence_check.py` 提供与 `core/` 逐阶段对应的参照输出，
@@ -25,16 +30,23 @@ import torch
 # --------------------------------------------------------------------- 环境 --
 
 
+# 仓库根：src/live3dgsavatar/data/reference.py → 上溯 4 层
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
 def _add_sys_path(root: Path) -> None:
     if str(root) not in sys.path:
         sys.path.append(str(root))
 
 
 @contextmanager
-def reference_workspace(reference_root: Path, src_root: Path):
-    """进入参照仓库的 cwd（其模型路径依赖相对路径），退出时恢复。"""
+def reference_workspace(reference_root: Path):
+    """进入参照仓库的 cwd（其模型路径依赖相对路径），退出时恢复。
+
+    只需参照仓库根 —— 本项目包已可正常导入（见模块 docstring），
+    参照侧的 `from submodules.flame import ...` 走它自己 root 的 sys.path。
+    """
     _add_sys_path(reference_root)
-    _add_sys_path(src_root)
     cwd = os.getcwd()
     os.chdir(reference_root)
     try:
@@ -65,7 +77,6 @@ class ReferenceBundle:
 
 def build_reference(
     reference_root: Path,
-    src_root: Path,
     data_dir: Path,
     ply_path: Path,
     tex_size: int = 256,
@@ -77,10 +88,12 @@ def build_reference(
     """加载参照模型与数据集。
 
     Args:
-        mlp_hidden: 参照实现的 MLP 架构硬编码为 `D → 128 → 128 → K`；
-            这里显式记录以便一致性校验（构造本身由参照代码决定）。
+        data_dir: 数据集目录（`<data_root>/<subject>`）
+        ply_path: 预训练 `.ply`
+        tex_size / num_basis_* / mlp_hidden: 模型结构，必须与 `.ply` 一致
+        split: 数据集切分
     """
-    with reference_workspace(reference_root, src_root):
+    with reference_workspace(reference_root):
         import nvdiffrast.torch as dr  # noqa: PLC0415
 
         from camera import IntrinsicsCamera  # noqa: PLC0415

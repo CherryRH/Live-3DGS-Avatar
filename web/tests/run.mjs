@@ -15,6 +15,7 @@
 import { parseFrame, parseMessage, geometryFromConfig, HEADER_BYTES, PROTOCOL_VERSION }
   from "../js/protocol.js";
 import { MockSource } from "../js/mock.js";
+import { FpsMeter } from "../js/fps.js";
 
 let passed = 0;
 const failures = [];
@@ -112,6 +113,58 @@ test("消息解析：非法 JSON 返回 null 而不抛", () => {
 test("未知 type 不崩（便于后端加消息）", () => {
   const m = parseMessage('{"type":"brand_new","x":1}');
   assert(m && m.type === "brand_new");
+});
+
+// ------------------------------------------------------------- fps.js --
+
+console.log("\nfps.js（前端自算画面帧率）");
+
+test("空窗口与单帧都返回 0（而不是保留旧值或 inf）", () => {
+  const m = new FpsMeter(1000);
+  assertEqual(m.value, 0, "空窗口");
+  assertEqual(m.display, "0");
+  m.tick(0);
+  assertEqual(m.value, 0, "只有 1 帧无法算速率");
+});
+
+test("稳定 60 FPS 时应测出 60", () => {
+  const m = new FpsMeter(1000);
+  for (let i = 0; i <= 60; i++) m.tick(i * (1000 / 60));
+  const v = m.value;
+  assert(Math.abs(v - 60) < 1.5, `应约 60，实际 ${v.toFixed(2)}`);
+  assertEqual(m.display, "60");
+});
+
+test("窗口滚动：帧率变化后 1–2 个窗口内收敛", () => {
+  const m = new FpsMeter(1000);
+  // 先在 [0,1)s 内 100 FPS
+  for (let i = 0; i <= 100; i++) m.tick(i * 10);
+  assert(Math.abs(m.value - 100) < 5, `第一段应约 100，实际 ${m.value.toFixed(1)}`);
+  // 再降为 10 FPS，跑满一个窗口
+  let t = 1010;
+  for (let i = 0; i < 12; i++) { m.tick(t); t += 100; }
+  assert(Math.abs(m.value - 10) < 3, `降速后应约 10，实际 ${m.value.toFixed(1)}`);
+});
+
+test("长时间无帧 → 窗口清空，显示 0", () => {
+  const m = new FpsMeter(500);
+  for (let i = 0; i < 30; i++) m.tick(i * 16);
+  assert(m.value > 0, "先有帧率");
+  m.tick(100000);                       // 很久之后来一帧，旧的全过期
+  assertEqual(m.value, 0, "只剩 1 帧 → 0");
+  assertEqual(m.display, "0");
+});
+
+test("非法窗口长度应报错", () => {
+  assertThrows(() => new FpsMeter(0), /windowMs/);
+  assertThrows(() => new FpsMeter(-1), /windowMs/);
+});
+
+test("reset 清空", () => {
+  const m = new FpsMeter(1000);
+  for (let i = 0; i < 10; i++) m.tick(i * 16);
+  m.reset();
+  assertEqual(m.value, 0);
 });
 
 // ---------------------------------------------------------------- mock --

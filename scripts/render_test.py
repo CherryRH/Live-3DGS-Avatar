@@ -286,7 +286,7 @@ def render_reference(args, scene, frames: list[int], keep_images: bool = True):
 
     `keep_images=False` 时跳过 D2H 拷贝（干净测量）。
     """
-    from equivalence.reference_pipeline import build_reference, reference_render
+    from live3dgsavatar.data.reference import build_reference, reference_render
 
     # 参照实现用**它自己的同名模型**（output/<subject>/<work_name>/model.ply），
     # 本项目 core 用 models/ 下的模型；两者本应内容一致，此处刻意分开取，
@@ -299,7 +299,7 @@ def render_reference(args, scene, frames: list[int], keep_images: bool = True):
             "（参照实现渲染需要它自己的模型；换模型时请同步两边，"
             "或用 --skip-reference 只测本项目）")
     ref = build_reference(
-        reference_root=args.reference, src_root=REPO_ROOT / "src",
+        reference_root=args.reference,
         data_dir=args.data, ply_path=ref_ply, tex_size=args.tex_size,
         num_basis_in=args.num_basis_in, num_basis_blend=args.num_basis_blend,
         mlp_hidden=tuple(args.mlp_hidden), split=args.split,
@@ -479,7 +479,7 @@ def main() -> int:
     print(f"[info] 帧数     : {'全部' if args.frames < 0 else args.frames}"
           f"{'  （跳过参照）' if args.skip_reference else ''}")
 
-    from reference_scene import load_scene
+    from live3dgsavatar.data.scene import load_scene
 
     print("\n[1/4] 加载模板几何与相机…")
     scene = load_scene(args.cfg, frames=args.frames)

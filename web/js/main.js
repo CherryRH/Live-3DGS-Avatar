@@ -8,14 +8,20 @@
  *
  * 启动参数（URL query）：
  *   ?mock=1  强制 mock      ?mock=0  强制连后端     默认：先试后端，失败则 mock
+ *
+ * **FPS 由前端自己算**（滑动窗口，按帧到达间隔）。它反映"对方实际看到的画面"。
+ * 后端不提供 fps 字段 —— 后者只把周期统计写到 stdout 日志，两端解耦。
  */
 
 import { RenderClient } from "./client.js";
 import { MockSource } from "./mock.js";
 import { FrameView } from "./view.js";
 import { Controls } from "./controls.js";
+import { FpsMeter } from "./fps.js";
+import { BUILD_TAG } from "./protocol.js";
 
 const el = {
+  build: document.querySelector("#build-tag"),
   canvas: document.querySelector("#canvas"),
   overlay: document.querySelector("#overlay"),
   overlayText: document.querySelector("#overlay-text"),
@@ -30,6 +36,11 @@ const el = {
   mockNote: document.querySelector("#mock-note"),
 };
 
+// 立刻显示构建标记：让人一眼看出浏览器加载的是哪个版本。
+// 若这里显示的还是旧值，说明拿到的是缓存 —— 硬刷新即可。
+el.build.textContent = BUILD_TAG;
+console.info(`[Live3DGSAvatar] 前端构建 ${BUILD_TAG}`);
+
 const view = new FrameView(el.canvas);
 
 /** mock 源；非 null 表示当前用的是 mock。 */
@@ -41,6 +52,8 @@ let source = null;
 
 let paused = false;
 let backendTried = false;
+
+const fpsMeter = new FpsMeter(1000);
 
 // ------------------------------------------------------------------ 显示 --
 
@@ -64,9 +77,8 @@ function showOverlay(text) {
 }
 
 function updateStats(status) {
-  if (typeof status.fps === "number") {
-    el.fps.textContent = status.fps > 0 ? status.fps.toFixed(0) : "0";
-  }
+  // ⚠️ 刻意**不读** status.fps —— 前端 FPS 由 fpsMeter 自己算（见上）。
+  //    后端也不再提供该字段：那反映服务端吞吐，与"对方看到的"不是一回事。
   const ms = status.ms ?? {};
   if (typeof ms.frame === "number" && ms.frame > 0) {
     el.frame.textContent = ms.frame.toFixed(2);
@@ -83,6 +95,13 @@ function updateStats(status) {
   if (typeof status.paused === "boolean") {
     paused = status.paused;
     controls.setPaused(paused);
+  }
+  // 帧号与播放状态以**后端**为准，避免两端各记一份而漂移。
+  // 后端按 app.status_interval_s（默认 4 Hz）周期推 status，
+  // 因此播放时帧号条会平滑推进（曾只在控制消息后回 status，
+  // 表现为"暂停时才突然更新"）。
+  if (typeof status.frame === "number" || typeof status.playing === "boolean") {
+    controls.applyPlayback({ frame: status.frame, playing: status.playing });
   }
 }
 
@@ -114,6 +133,14 @@ const controls = new Controls(document, {
     paused = next;
     controls.setPaused(paused);
     source?.send({ type: "stream", paused });
+  },
+  onStep(delta) {
+    // 单步：mock 直接改本地帧号，后端发独立 op（前端无需知道当前帧号）
+    if (mock) {
+      mock.send({ type: "step", delta });
+      return;
+    }
+    source?.send({ type: "step", delta });
   },
   onCapture() {
     const name = `snapshot-${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -161,6 +188,8 @@ function wireSource(src, { isMock }) {
       console.error("[main] 绘制失败：", err);
       showOverlay(`绘制失败：${err.message}`);
     }
+    // 前端自测画面帧率：在**真正画上去之后**打点
+    fpsMeter.tick();
     if (src.dropped !== undefined) el.dropped.textContent = String(src.dropped);
   });
 
@@ -186,6 +215,7 @@ function startMock(reason) {
     subject: document.querySelector("#f-subject").value,
     work_name: document.querySelector("#f-work-name").value,
     render: { background: [0, 0, 0], scaling_modifier: 1, scale: 1, target_fps: 60 },
+    drive: { mode: "still", frame: 0, amplitude: 0.1, playing: false },
     dataset: { num_frames: 254 },
   });
   controls.showModelError("mock：无真实模型信息");
@@ -237,6 +267,15 @@ function connectToBackend() {
 
 // -------------------------------------------------------------------- 启动 --
 
+// 脚本出错时要**显式可见**。否则表现为"界面完全没反应"，极难排查。
+window.addEventListener("error", (ev) => {
+  showOverlay(`前端脚本错误：${ev.message}（构建 ${BUILD_TAG}）`);
+  console.error("[main] 未捕获错误", ev.error ?? ev.message);
+});
+window.addEventListener("unhandledrejection", (ev) => {
+  console.error("[main] 未处理的 Promise 拒绝", ev.reason);
+});
+
 const params = new URLSearchParams(location.search);
 const forceMock = params.get("mock") === "1";
 const forceBackend = params.get("mock") === "0";
@@ -252,6 +291,10 @@ if (forceMock || isFileProtocol) {
   // 默认：先试后端，失败自动回退（见 retry 处理）
   connectToBackend();
 }
+
+// 前端 FPS 独立刷新：不依赖后端的 status 推送节奏
+// （后端刻意不推周期心跳，见 docs/GUI_PROTOCOL.md §1.1）。
+setInterval(() => { el.fps.textContent = fpsMeter.display; }, 250);
 
 window.addEventListener("beforeunload", () => {
   client?.close();

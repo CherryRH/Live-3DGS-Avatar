@@ -15,6 +15,17 @@ export const HEADER_BYTES = 4;
 export const PROTOCOL_VERSION = 1;
 
 /**
+ * 前端构建标记。
+ *
+ * 用途只有一个：**一眼判断浏览器加载的是不是最新代码**。
+ * 改了前端却看不到变化时，先看这里 —— 如果标记没变，就是缓存问题
+ * （后端的静态服务已设 `Cache-Control: no-store`，仍可能是浏览器旧标签页）。
+ *
+ * 改前端时请顺手更新此值。
+ */
+export const BUILD_TAG = "2026-02-gui4";
+
+/**
  * 解析一条二进制帧。
  *
  * @param {ArrayBuffer} buffer 原始消息

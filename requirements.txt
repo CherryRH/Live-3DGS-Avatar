@@ -25,6 +25,14 @@ plyfile==1.1.3
 scipy==1.15.3
 roma==1.6.1
 
+# ---------- GUI 服务（P2）----------
+# 本地单用户工具：FastAPI 提供 HTTP + WebSocket，uvicorn 跑 ASGI。
+# 帧走原始二进制，故不需要任何编解码依赖。
+# ⚠️ uvicorn 的 [standard] extra 会带上 uvloop/httptools/websockets；
+#    其中 websockets 是必须的（FastAPI 的 WebSocket 实现依赖它）。
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
 # ---------- 训练 / 日志 ----------
 tensorboard==2.21.0
 

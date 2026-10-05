@@ -21,10 +21,14 @@ export class MockSource extends EventTarget {
   constructor(opts = {}) {
     super();
     this.geom = { ...DEFAULT_GEOM, ...opts };
+    this.totalFrames = this.geom.numFrames;
+    this.frameIndex = 0;
+    this.playing = false;
     this.frameIntervalMs = opts.fps ? 1000 / opts.fps : FRAME_INTERVAL_MS;
     this.seq = 0;
     this.background = [0, 0, 0];
-    this.drive = { mode: "dataset", frame: 0, amplitude: 0.1 };
+    this.drive = { mode: "still", frame: 0, amplitude: 0.1 };
+    this.sourceKind = "checkpoint";
     this.paused = false;
     this.t0 = performance.now();
     this._timers = { frame: null, status: null };
@@ -61,16 +65,34 @@ export class MockSource extends EventTarget {
     if (msg.type === "params") {
       const r = msg.render ?? {};
       if (Array.isArray(r.background)) this.background = r.background.map(Number);
+      const src = msg.source ?? {};
+      if (src.kind === "checkpoint" || src.kind === "live") {
+        this.sourceKind = src.kind;
+        if (src.kind === "live") this.playing = false;   // live 下无帧号概念
+      }
       const d = msg.drive ?? {};
       this.drive = {
         mode: d.mode ?? this.drive.mode,
         frame: d.frame ?? this.drive.frame,
         amplitude: d.amplitude ?? this.drive.amplitude,
       };
+      if ("playing" in d) this.playing = Boolean(d.playing);
+      if (d.mode === "still") this.playing = false;   // 定住模式不播放
+      if ("frame" in d) {
+        this.frameIndex = Math.max(0, Math.min(Number(d.frame), this.totalFrames - 1));
+        this.drive.frame = this.frameIndex;
+      }
       return true;
     }
     if (msg.type === "stream") {
       this.paused = Boolean(msg.paused);
+      return true;
+    }
+    if (msg.type === "step") {
+      // 与后端 FrameTimeline.step 同语义：**边界夹住，不回绕**
+      const d = Number(msg.delta ?? 1);
+      this.frameIndex = Math.max(0, Math.min(this.frameIndex + d, this.totalFrames - 1));
+      this._emitStatus();
       return true;
     }
     if (msg.type === "capture") {
@@ -100,6 +122,13 @@ export class MockSource extends EventTarget {
 
   _tick() {
     if (this.paused) return;
+
+    // 与后端一致：**出帧之后**推进播放（回绕）。
+    // 只有 `play` 模式才推进 —— `still` 定住不动，`random` 是扰动不是播放。
+    if (this.playing && this.drive.mode === "play" && this.sourceKind !== "live") {
+      this.frameIndex = (this.frameIndex + 1) % this.totalFrames;
+      this.drive.frame = this.frameIndex;
+    }
 
     const { width: w, height: h } = this.geom;
     const bytes = HEADER_BYTES + w * h * 3;
@@ -140,7 +169,7 @@ export class MockSource extends EventTarget {
     const rx = w * 0.22;
     const ry = h * 0.30;
     // 帧号与扰动幅度都会体现在图案上，便于确认参数真的传到了"后端"
-    const phase = (this.drive.frame % this.geom.numFrames) / this.geom.numFrames;
+    const phase = (this.frameIndex % this.totalFrames) / this.totalFrames;
     const amp = this.drive.mode === "random" ? this.drive.amplitude : 0;
     const wobble = Math.sin(phase * Math.PI * 2) * 0.12 + amp * 0.5;
 
@@ -188,6 +217,10 @@ export class MockSource extends EventTarget {
         dropped: 0,
         peak_memory_mib: 0,
         paused: this.paused,
+        frame: this.frameIndex,
+        playing: this.playing,
+        total_frames: this.totalFrames,
+        source: this.sourceKind,
         mock: true,
       },
     }));

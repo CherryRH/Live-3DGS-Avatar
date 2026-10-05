@@ -18,6 +18,7 @@ from support import REPO_ROOT
 
 SRC = REPO_ROOT / "src" / "live3dgsavatar"
 CORE = SRC / "core"
+DATA = SRC / "data"
 
 # core/ 的允许依赖（子包 + 标准库 + 第三方）
 CORE_FORBIDDEN_PREFIXES = (
@@ -31,9 +32,17 @@ CORE_FORBIDDEN_PREFIXES = (
 
 # 唯一允许接触 CUDA 扩展的位置
 CUDA_EXTENSION_PACKAGES = ("diff_gaussian_rasterization",)
+# CUDA 扩展的允许位置。
+#
+# ⚠️ 这条规则的**本意是约束 `core/`**：`core/` 只应在这两处接触 CUDA 扩展，
+#    这样替换/升级扩展时改动面可控。
+#    `data/reference.py` 是**参照实现的适配层**（给等价门与渲染测试用），
+#    它本来就要用参照的 `linear_blending`，且不在 `core/` 的运行路径上，
+#    因此明确列入白名单而不是放宽规则。
 CUDA_ALLOWED_FILES = {
-    CORE / "render" / "rasterizer.py",   # 光栅化封装
-    CORE / "deform" / "blend.py",        # 可选的 CUDA linear_blending 加速路径
+    CORE / "render" / "rasterizer.py",       # 光栅化封装
+    CORE / "deform" / "blend.py",            # 可选的 CUDA linear_blending 加速路径
+    DATA / "reference.py",                   # 参照实现适配层（非 core 运行路径）
 }
 
 
@@ -75,10 +84,13 @@ def test_core_does_not_import_upper_layers() -> None:
 
 
 def test_cuda_extension_only_imported_where_allowed() -> None:
-    """CUDA 扩展只允许在 `core/render/` 与 `core/deform/blend.py` 出现。
+    """CUDA 扩展只允许在**白名单**里出现（见 `CUDA_ALLOWED_FILES`）。
 
     这条规则的意义：`submodules/` 里的扩展与 CUDA/torch 版本强耦合，
     一旦 import 散落到各处，替换或升级的成本会迅速失控。
+
+    核心约束是 **`core/` 只在这两处接触扩展**；`data/reference.py` 是
+    参照实现适配层，明确列入白名单（它不在 `core/` 的运行路径上）。
     """
     violations: list[str] = []
     for path in _iter_modules():
@@ -203,7 +215,8 @@ def test_scripts_trigger_compat_before_chumpy() -> None:
     `scripts/render_test.py` 曾因此报错。
     """
     targets = [REPO_ROOT / "scripts" / "render_test.py",
-               REPO_ROOT / "tests" / "reference_scene.py"]
+               REPO_ROOT / "scripts" / "profile_deform.py",
+               REPO_ROOT / "src" / "live3dgsavatar" / "data" / "scene.py"]
     for path in targets:
         assert path.exists(), f"缺少文件：{path}"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -374,3 +387,62 @@ def test_no_tautological_assertions() -> None:
                         f"{path.relative_to(REPO_ROOT)}:{node.lineno} `assert True`")
 
     assert not offenders, "存在恒真断言：\n  " + "\n  ".join(offenders)
+
+
+def test_pyproject_declares_package_layout() -> None:
+    """打包配置必须声明 src 布局与 CLI 入口。"""
+    import re
+
+    path = REPO_ROOT / "pyproject.toml"
+    assert path.exists(), (
+        "缺少 pyproject.toml —— 项目不可安装，"
+        "`python -m live3dgsavatar.app` 会 ModuleNotFoundError")
+
+    text = path.read_text(encoding="utf-8")
+
+    # src 布局
+    assert 'package-dir = { "" = "src" }' in text, "应声明 src 布局"
+    assert 'where = ["src"]' in text, "应声明 package 查找目录"
+
+    # console script 入口指向真实存在的函数
+    m = re.search(r'\[project\.scripts\]\s*\n(\w+)\s*=\s*"([^"]+)"', text)
+    assert m, "应声明 [project.scripts] 入口"
+    target = m.group(2)
+    module_path, _, func = target.partition(":")
+    assert module_path and func, f"入口格式应为 module:func，实际 {target!r}"
+
+    rel = Path(*module_path.split(".")).with_suffix(".py")
+    mod_file = REPO_ROOT / "src" / rel
+    assert mod_file.exists(), f"入口模块不存在：{mod_file}"
+    src = mod_file.read_text(encoding="utf-8")
+    assert f"def {func}(" in src, f"{mod_file.name} 里没有 def {func}()"
+
+
+def test_setup_env_installs_project() -> None:
+    """`setup_env.sh` 必须安装**本项目自身**（可编辑、--no-deps）。
+
+    与 `test_pyproject_declares_package_layout` 配套：光有 pyproject 而没人装它，
+    `python -m live3dgsavatar.app` 仍然不可用。
+
+    ⚠️ 断言必须**具体到那一条命令**。初版只查 `"-e "` 与 `"--no-deps"` 是否出现，
+    但文件里 `pip install -e "$SUBMODULES/diff-gaussian-rasterization" --no-build-isolation`
+    等步骤也含这些片段，于是**删掉本项目的安装步骤测试仍然通过** —— 假保证。
+    """
+    text = (REPO_ROOT / "setup_env.sh").read_text(encoding="utf-8")
+
+    # 安装本项目：必须是 `-e "$REPO_ROOT"`，且带 --no-deps
+    lines = [ln.strip() for ln in text.splitlines()]
+    project_install = [
+        ln for ln in lines
+        if ln.startswith("pip install") and "$REPO_ROOT" in ln and " -e " in ln
+    ]
+    assert project_install, (
+        'setup_env.sh 缺少安装本项目的命令（应形如 '
+        '`pip install --no-deps --no-build-isolation -e "$REPO_ROOT"`）')
+    cmd = project_install[0]
+    assert "--no-deps" in cmd, (
+        "安装本项目必须加 --no-deps：torch 与三个 CUDA 扩展有自己的安装顺序"
+        "（见 docs/ENVIRONMENT.md §2），让 pip 顺着 pyproject 解析会与它们打架")
+
+    # 安装后立刻自检导入，而不是等 run_gui.sh 才 ModuleNotFoundError
+    assert "import live3dgsavatar" in text, "setup_env.sh 应在安装后自检导入"

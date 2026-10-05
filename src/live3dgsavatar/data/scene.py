@@ -4,8 +4,12 @@
 本项目需要的只是「拓扑 + UV + 顶点 + 相机」。这里把参照仓库的加载逻辑薄封装一次，
 避免在多个脚本里重复。
 
-⚠️ 数据层（`src/live3dgsavatar/data/`）属于 P2 的工作；在那之前，
-本模块是**脚本侧**的临时适配层，不属于 `core/`（`core/` 不允许依赖参照仓库）。
+**层次**：这是**数据层**（`data/`）。`core/` 不允许依赖参照仓库，
+也不允许 import 本模块 —— 它只接受显式传入的 `Mesh` / `Camera` / 张量。
+
+**为什么经由参照仓库**：INSTA 数据集的读取（3DMM 参数、相机、mesh 顶点）
+目前复用参照实现的 `FLAMEDataset` 与 FLAME 模板，避免重复实现。
+将来若自研数据层，只需替换本模块，上层（脚本 / GUI 后端）不用改。
 """
 
 from __future__ import annotations
@@ -18,8 +22,10 @@ import torch
 
 from live3dgsavatar.config import Config, load_config
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "src"))
+# 仓库根：src/live3dgsavatar/data/scene.py → 上溯 4 层
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "src"))
 
 # ⚠️ 必须在**导入 FLAME 之前**打补丁（`FLAME.__init__` 里 pickle.load → import chumpy）。
 #    `live3dgsavatar/__init__.py` 导入即施加 numpy 兼容补丁。
@@ -40,10 +46,18 @@ class Scene:
     T: torch.Tensor                   # [3]
     width: int
     height: int
+    #: 数据集**总共**多少帧（可能大于已载入的 `len(frames)`）
+    dataset_frames: int = 0
 
     @property
     def num_frames(self) -> int:
+        """已载入的帧数。"""
         return len(self.frames)
+
+    @property
+    def total_frames(self) -> int:
+        """数据集总帧数；未载入的帧无法访问。"""
+        return self.dataset_frames or len(self.frames)
 
     def frames_tensor(self, idx: list[int], device: str = "cuda"):
         """按索引取网格顶点，堆成 `[B, V, 3]`。"""
@@ -93,9 +107,10 @@ def load_scene(
             f"subject={cfg.subject} 推出；"
             "请检查 configs/system.yaml 或设 LIVE3DGS_DATA_ROOT）")
 
-    from equivalence.reference_pipeline import reference_workspace
+    # 参照侧的加载管线（只读参照仓库）；同属 data/ 层，包内相对导入
+    from .reference import reference_workspace  # noqa: PLC0415
 
-    with reference_workspace(ref_root, REPO_ROOT / "src"):
+    with reference_workspace(ref_root):
         from dataset import FLAMEDataset  # noqa: PLC0415
         from submodules.flame import FLAME, FlameConfig  # noqa: PLC0415
 
@@ -112,7 +127,10 @@ def load_scene(
             use_shape_weight=bool(cfg.get("dataset.use_shape_weight", True)),
             use_pose_weight=bool(cfg.get("dataset.use_pose_weight", True)))
 
-        n = ds.__len__() if frames < 0 else min(frames, ds.__len__())
+        # 数据集总帧数 vs 已载入帧数：GUI 只需要载入一部分，
+        # 但控件上的"数据集帧"滑块要反映**总数**。
+        total = ds.__len__()
+        n = total if frames < 0 else min(frames, total)
         out = [
             {"mesh": ds.mesh_verts[i].to(device),
              "blend_weight": ds.blend_weight[i].to(device)}
@@ -135,4 +153,5 @@ def load_scene(
             T=torch.from_numpy(ds.camera_extri[:3, 3]).to(torch.float32),
             width=int(ds.image_width),
             height=int(ds.image_height),
+            dataset_frames=total,
         )

@@ -61,6 +61,12 @@ python scripts/show_config.py --json          # 机器可读
 | `runtime.device` | `cuda` 或 `cpu`。`cpu` 仅供不依赖 CUDA 内核的自检 |
 | `runtime.split` | 数据集切分：`all` / `train` / `test` |
 | `smoke.max_frames` | 采样帧数上限；`null` 表示不限制 |
+| `app.host` / `app.port` | GUI 服务监听地址与端口。默认 `localhost:8000`。**本机回环地址会用 dual-stack socket 监听**，使 `localhost` / `127.0.0.1` / `::1` 三种写法都能访问（见下） |
+| `app.target_fps` | **帧数上限**：每秒最多渲染几帧。同时决定播放推进速度（30 时动作比 60 慢一倍）。`0` 表示不限，此时帧率受渲染耗时限制 |
+| `app.status_interval_s` | `status` 消息推送间隔（秒）。前端据此更新帧号条；太小占满通道，太大帧号一跳一跳 |
+| `app.stats_log_interval_s` | 后端统计日志间隔（秒）。日志走 stdout，与前端 FPS 解耦 |
+| `app.autostart` | 打开页面是否自动推帧 |
+| `app.preload_frames` | GUI 启动时预载帧数。**`-1`（默认）表示全部** —— 设小会让「数据集帧」滑块被夹在已载入范围（曾因此只能播前 20 帧） |
 
 ### 模型目录约定（与 RGBAvatar 的 `--subject` / `--work_name` 保持一致）
 
@@ -98,6 +104,27 @@ python scripts/render_test.py --subject duda --work-name test
 
 # 环境变量
 LIVE3DGS_SUBJECT=duda LIVE3DGS_WORK_NAME=test python scripts/render_test.py
+```
+
+### 监听地址：为什么要 dual-stack
+
+单 host 只能覆盖一个地址族。实测本机（WSL2，`networkingMode=mirrored`）：
+
+| `host` | `127.0.0.1` | `::1` |
+|---|---|---|
+| `127.0.0.1` | ✓ | ✗ |
+| `localhost` | ✓ | ✗ |
+| `::` | ✗（本机 `v6only=1`） | ✓ |
+
+而 `/etc/hosts` 里 `localhost` **优先解析为 `::1`**，浏览器打开
+`http://localhost:8000` 会先试 `::1` —— 只绑 IPv4 时 Windows 浏览器报
+**「无法连接」**，而 VS Code 内置浏览器（走 `127.0.0.1`）却正常。
+
+因此回环地址一律改用 **dual-stack socket**（绑 `::` 并关闭 `IPV6_V6ONLY`），
+两种写法都通。启动日志会打印实际监听情况：
+
+```
+监听：IPv4 127.0.0.1 + IPv6 ::1（dual-stack，端口 8000）
 ```
 
 ### 路径写法

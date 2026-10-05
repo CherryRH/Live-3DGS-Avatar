@@ -1,6 +1,6 @@
 /**
  * 前端 DOM 相关模块自检（**不需要浏览器**）：用最小桩验证
- * `view.js` 的 RGB→RGBA 转换与 `controls.js` 的参数装配。
+ * `view.js` 的 RGB→RGBA 转换与 `controls.js` 的消息装配 / 播放条逻辑。
  *
  * canvas 与 WebSocket 的真实行为仍只能在浏览器里验证；
  * 这里覆盖的是**我们自己写的逻辑**，而不是浏览器的实现。
@@ -9,6 +9,7 @@
  *
  *     node web/tests/dom.mjs
  */
+
 import { FrameView } from "../js/view.js";
 import { Controls } from "../js/controls.js";
 
@@ -18,19 +19,32 @@ const t = (name, fn) => { try { fn(); pass++; console.log(`  \x1b[32m✓\x1b[0m 
 const eq = (a, b, m) => { if (a !== b) throw new Error(`${m ?? "不相等"}: 期望 ${b} 实际 ${a}`); };
 const ok = (c, m) => { if (!c) throw new Error(m ?? "断言失败"); };
 
-// ---- FrameView 桩：只要 createImageData / putImageData ----
+// ---- 全局桩：Controls 会在宿主上挂键盘监听，并用 instanceof 判断事件目标 ----
+const keyboard = { handlers: {} };
+globalThis.document = {
+  addEventListener: (ev, fn) => { (keyboard.handlers[ev] ??= []).push(fn); },
+  removeEventListener: (ev, fn) => {
+    keyboard.handlers[ev] = (keyboard.handlers[ev] ?? []).filter((f) => f !== fn);
+  },
+  querySelector: () => null,
+};
+globalThis.HTMLInputElement = class HTMLInputElement {};
+globalThis.HTMLSelectElement = class HTMLSelectElement {};
+
+// ---- FrameView 桩 ----
+let canvas0;
 function makeCanvas() {
   return {
     width: 0, height: 0,
     getContext: () => ({
       createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
       putImageData: (img) => { canvas0.lastPainted = img; },
-      save(){}, restore(){}, setTransform(){}, fillRect(){}, fillStyle: "",
+      save() {}, restore() {}, setTransform() {}, fillRect() {}, fillStyle: "",
     }),
     toBlob: (cb) => cb(null),
   };
 }
-let canvas0;
+
 console.log("\nview.js");
 t("RGB→RGBA 转换正确且 alpha=255", () => {
   canvas0 = makeCanvas();
@@ -65,80 +79,208 @@ t("未 resize 就 draw 应报错", () => {
   ok(threw);
 });
 
-// ---- Controls 桩 ----
+// ---- Controls 桩：元素清单与 index.html 对应 ----
 function el(tag = "input", attrs = {}) {
   const listeners = {};
   return Object.assign({
     tagName: tag.toUpperCase(), value: "", disabled: false, max: "", textContent: "",
-    checked: false, options: [],
+    checked: false, options: [], classList: { toggle() {}, add() {}, remove() {} },
     addEventListener(ev, fn) { (listeners[ev] ??= []).push(fn); },
     _fire(ev) { (listeners[ev] ?? []).forEach((f) => f()); },
   }, attrs);
 }
+
 function makeRoot() {
   const map = {
+    // 模型
     "#f-subject": el("input", { value: "duda" }),
     "#f-work-name": el("input", { value: "test" }),
     "#btn-load": el("button"), "#model-info": el("p"),
+    // 渲染
     "#f-bg": el("select", { value: "0,0,0" }),
     "#f-scaling": el("input", { value: "1" }), "#o-scaling": el("output"),
     "#f-scale": el("input", { value: "1" }), "#o-scale": el("output"),
-    "#f-fps": el("input", { value: "60" }), "#o-fps": el("output"),
-    "#f-drive-mode": el("select", { value: "dataset" }),
+    // 播放条
+    "#player": el("div"),
+    "#btn-play": el("button"),
+    "#btn-step-back": el("button"), "#btn-step-fwd": el("button"),
     "#f-frame": el("input", { value: "0" }), "#o-frame": el("output"),
-    "#f-play": el("input", { checked: false }),
+    "#o-total": el("span"),
+    "#f-source": el("select", { value: "checkpoint" }),
+    "#f-fps": el("input", { value: "60" }), "#o-fps": el("output"),
     "#f-amp": el("input", { value: "0.1" }), "#o-amp": el("output"),
+    "#f-perturb": el("input", { checked: false }),
+    // 操作
     "#btn-pause": el("button"), "#btn-capture": el("button"), "#btn-reconnect": el("button"),
   };
-  return { querySelector: (s) => map[s] ?? null, _map: map };
+  return {
+    querySelector: (s) => map[s] ?? null,
+    // 宿主自己也有 addEventListener：Controls 优先用它
+    addEventListener: (ev, fn) => { (keyboard.handlers[ev] ??= []).push(fn); },
+    removeEventListener: (ev, fn) => {
+      keyboard.handlers[ev] = (keyboard.handlers[ev] ?? []).filter((f) => f !== fn);
+    },
+    _map: map,
+  };
+}
+
+function makeControls(root, over = {}) {
+  return new Controls(root, {
+    onParams() {}, onLoadModel() {}, onPause() {}, onCapture() {},
+    onReconnect() {}, onStep() {}, ...over,
+  });
 }
 
 console.log("\ncontrols.js");
-t("_emitParams 装配出协议要求的结构", () => {
+t("_emitParams 装配出协议要求的两层结构", () => {
   const root = makeRoot(); let sent = null;
-  const c = new Controls(root, { onParams: (m) => { sent = m; }, onLoadModel(){}, onPause(){}, onCapture(){}, onReconnect(){} });
+  const c = makeControls(root, { onParams: (m) => { sent = m; } });
   root._map["#f-bg"].value = "1,1,1";
   root._map["#f-scaling"].value = "1.25";
   root._map["#f-scale"].value = "0.5";
   root._map["#f-fps"].value = "90";
   root._map["#f-frame"].value = "42";
-  root._map["#f-amp"].value = "0.3";
   c._emitParams();
   eq(sent.type, "params");
-  ok(Array.isArray(sent.render.background) && sent.render.background[0] === 1, "background");
+  eq(sent.source.kind, "checkpoint", "数据源层级");
+  ok(!("mode" in sent.drive), "不应再有 drive.mode（语义已并入 playing）");
   eq(sent.render.scaling_modifier, 1.25);
   eq(sent.render.scale, 0.5);
   eq(sent.render.target_fps, 90);
-  eq(sent.drive.mode, "dataset");
   eq(sent.drive.frame, 42);
-  eq(sent.drive.amplitude, 0.3);
+  c.destroy();
 });
-t("随机模式下禁用帧滑块、启用扰动幅度", () => {
-  const root = makeRoot();
-  const c = new Controls(root, { onParams(){}, onLoadModel(){}, onPause(){}, onCapture(){}, onReconnect(){} });
-  root._map["#f-drive-mode"].value = "random";
+
+t("勾选随机扰动 → drive.perturb=true，幅度控件启用", () => {
+  const root = makeRoot(); let sent = null;
+  const c = makeControls(root, { onParams: (m) => { sent = m; } });
+  ok(root._map["#f-amp"].disabled, "未开启扰动时幅度应禁用");
+  root._map["#f-perturb"].checked = true;
+  // 走真实路径：勾选会触发 change（真实浏览器如此），由它驱动 UI 与消息
+  root._map["#f-perturb"]._fire("change");
+  eq(sent.drive.perturb, true);
+  ok(!root._map["#f-amp"].disabled, "开启扰动后幅度应启用");
+  c.destroy();
+});
+
+t("数据源 live → 不发送 frame/mode（该层级不适用）", () => {
+  const root = makeRoot(); let sent = null;
+  const c = makeControls(root, { onParams: (m) => { sent = m; } });
+  root._map["#f-source"].value = "live";
   c._renderOutputs();
-  ok(root._map["#f-frame"].disabled, "帧滑块应禁用");
-  ok(!root._map["#f-amp"].disabled, "扰动幅度应启用");
+  c._emitParams();
+  eq(sent.source.kind, "live");
+  eq(Object.keys(sent.drive).length, 0, "live 下 drive 应为空对象");
+  ok(root._map["#f-frame"].disabled, "live 下帧滑块应禁用");
+  ok(root._map["#btn-step-fwd"].disabled, "live 下单步应禁用");
+  c.destroy();
 });
-t("applyState 写入模型信息与帧范围", () => {
+
+t("单步按钮触发 onStep(±1)", () => {
   const root = makeRoot();
-  const c = new Controls(root, { onParams(){}, onLoadModel(){}, onPause(){}, onCapture(){}, onReconnect(){} });
-  c.applyState({ subject: "alice", work_name: "run1",
+  const steps = [];
+  const c = makeControls(root, { onStep: (d) => steps.push(d) });
+  root._map["#btn-step-back"]._fire("click");
+  root._map["#btn-step-fwd"]._fire("click");
+  eq(steps.length, 2); eq(steps[0], -1); eq(steps[1], +1);
+  c.destroy();
+});
+
+t("方向键单步、空格播放/暂停", () => {
+  keyboard.handlers.keydown = [];       // 清掉其他用例遗留的监听
+  const root = makeRoot();
+  const steps = [];
+  let sent = null;
+  const c = makeControls(root, {
+    onStep: (d) => steps.push(d), onParams: (m) => { sent = m; },
+  });
+  const fire = (key) => (keyboard.handlers.keydown ?? []).forEach(
+    (f) => f({ key, target: {}, preventDefault() {} }));
+  fire("ArrowLeft"); fire("ArrowRight");
+  eq(steps[steps.length - 2], -1); eq(steps[steps.length - 1], +1);
+  fire(" ");
+  ok(sent && sent.drive.playing === true, "空格应触发播放");
+  c.destroy();
+  eq((keyboard.handlers.keydown ?? []).length, 0, "destroy() 后应摘掉监听");
+});
+
+t("播放按钮在 播放/暂停 之间切换并上报", () => {
+  const root = makeRoot();
+  const sent = [];
+  const c = makeControls(root, { onParams: (m) => sent.push(m) });
+  root._map["#btn-play"]._fire("click");
+  eq(sent[0].drive.playing, true, "第一次点击应播放");
+  eq(root._map["#btn-play"].textContent, "⏸", "按钮应变为暂停图标");
+  root._map["#btn-play"]._fire("click");
+  eq(sent[1].drive.playing, false, "第二次点击应暂停");
+  eq(root._map["#btn-play"].textContent, "▶");
+  c.destroy();
+});
+
+t("播放状态由服务端回填，不自己记", () => {
+  const root = makeRoot();
+  const c = makeControls(root);
+  c.applyPlayback({ frame: 42, playing: true });
+  eq(root._map["#f-frame"].value, "42", "帧号应回填");
+  eq(root._map["#btn-play"].textContent, "⏸", "播放态应回填");
+  c.applyPlayback({ frame: 7, playing: false });
+  eq(root._map["#f-frame"].value, "7");
+  eq(root._map["#btn-play"].textContent, "▶");
+  c.destroy();
+});
+
+t("拖动帧滑块期间不被回填（否则和手指打架）", () => {
+  const root = makeRoot();
+  const c = makeControls(root);
+  root._map["#f-frame"].value = "100";
+  root._map["#f-frame"]._fire("pointerdown");
+  c.applyPlayback({ frame: 3, playing: false });
+  eq(root._map["#f-frame"].value, "100", "拖动中不应被服务端回填");
+  root._map["#f-frame"]._fire("pointerup");
+  c.applyPlayback({ frame: 3, playing: false });
+  eq(root._map["#f-frame"].value, "3", "松手后应恢复回填");
+  c.destroy();
+});
+
+t("applyState 写入模型信息、总帧数与驱动方式", () => {
+  const root = makeRoot();
+  const c = makeControls(root);
+  c.applyState({
+    subject: "alice", work_name: "run1",
     model: { num_gaussians: 60000, num_basis: 20, num_basis_in: 129, tex_size: 256 },
-    dataset: { num_frames: 100 } });
+    drive: { frame: 5, playing: true, perturb: true, amplitude: 0.2 },
+    dataset: { num_frames: 100 },
+  });
   eq(root._map["#f-subject"].value, "alice");
-  eq(root._map["#f-work-name"].value, "run1");
   ok(/60000/.test(root._map["#model-info"].textContent), "高斯数应显示");
   eq(root._map["#f-frame"].max, "99", "帧范围上限");
+  eq(root._map["#o-total"].textContent, "100", "总帧数应显示");
+  eq(root._map["#f-frame"].value, "5");
+  ok(root._map["#f-perturb"].checked, "扰动开关应回填");
+  c.destroy();
 });
+
+t("暂停时仍发送 playing=false（渲染继续，只是帧号停住）", () => {
+  const root = makeRoot(); const sent = [];
+  const c = makeControls(root, { onParams: (m) => sent.push(m) });
+  root._map["#btn-play"]._fire("click");     // 播放
+  eq(sent[0].drive.playing, true);
+  root._map["#btn-play"]._fire("click");     // 暂停
+  eq(sent[1].drive.playing, false);
+  // 暂停后仍应带完整参数（后端据此继续渲染同一帧，而不是停掉渲染）
+  ok("frame" in sent[1].drive, "暂停时仍应带 frame");
+  ok("render" in sent[1], "暂停时仍应带渲染参数");
+  c.destroy();
+});
+
 t("subject 为空时拒绝加载", () => {
   const root = makeRoot(); let called = false;
-  const c = new Controls(root, { onParams(){}, onLoadModel(){ called = true; }, onPause(){}, onCapture(){}, onReconnect(){} });
+  const c = makeControls(root, { onLoadModel: () => { called = true; } });
   root._map["#f-subject"].value = "  ";
   root._map["#btn-load"]._fire("click");
   ok(!called, "不应触发加载");
   ok(/不能为空/.test(root._map["#model-info"].textContent));
+  c.destroy();
 });
 
 console.log(`\n${"─".repeat(50)}`);

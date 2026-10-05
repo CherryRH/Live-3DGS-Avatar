@@ -1,19 +1,24 @@
 /**
- * 参数面板 ↔ 消息装配。
+ * 参数面板与播放条 ↔ 消息装配。
  *
- * 原则：控件只负责"读值"，消息的统一装配与节流放在这里，
- * 避免每个控件各写一遍 `send` 逻辑（那是重复与漂移的来源）。
+ * 分工原则：
+ * - **控件只负责"读值"**；消息统一在 `_emitParams` 里装配，避免每个控件各写一遍。
+ * - **帧号与播放状态以服务端为准**（`status.frame` / `status.playing`），
+ *   前端只回填，不自己维护一份 —— 否则两端必然漂移。
+ *
+ * 见 docs/GUI_PROTOCOL.md §3.2。
  */
 
-/** 面板上暴露的参数 → 默认值。与 docs/GUI_PROTOCOL.md §3.2 对应。 */
+/** 面板默认值。 */
 export const DEFAULTS = {
   background: [0, 0, 0],
   scalingModifier: 1.0,
   scale: 1.0,
   targetFps: 60,
-  driveMode: "dataset",
+  sourceKind: "checkpoint",
   frame: 0,
   playing: false,
+  perturb: false,
   amplitude: 0.1,
 };
 
@@ -21,88 +26,126 @@ export class Controls {
   /**
    * @param {Document|HTMLElement} root
    * @param {{onParams:Function, onLoadModel:Function, onPause:Function,
-   *          onCapture:Function, onReconnect:Function}} handlers
+   *          onCapture:Function, onReconnect:Function, onStep:Function}} handlers
    */
   constructor(root, handlers) {
     this.root = root;
     this.handlers = handlers;
     this.el = {
+      // 模型
       subject: root.querySelector("#f-subject"),
       workName: root.querySelector("#f-work-name"),
       loadModel: root.querySelector("#btn-load"),
       modelInfo: root.querySelector("#model-info"),
+      // 渲染
       bg: root.querySelector("#f-bg"),
       scaling: root.querySelector("#f-scaling"),
       scalingOut: root.querySelector("#o-scaling"),
       scale: root.querySelector("#f-scale"),
       scaleOut: root.querySelector("#o-scale"),
-      fps: root.querySelector("#f-fps"),
-      fpsOut: root.querySelector("#o-fps"),
-      driveMode: root.querySelector("#f-drive-mode"),
+      // 播放条
+      player: root.querySelector("#player"),
+      play: root.querySelector("#btn-play"),
+      stepBack: root.querySelector("#btn-step-back"),
+      stepFwd: root.querySelector("#btn-step-fwd"),
       frame: root.querySelector("#f-frame"),
       frameOut: root.querySelector("#o-frame"),
-      play: root.querySelector("#f-play"),
+      total: root.querySelector("#o-total"),
+      source: root.querySelector("#f-source"),
+      fps: root.querySelector("#f-fps"),
+      fpsOut: root.querySelector("#o-fps"),
       amp: root.querySelector("#f-amp"),
       ampOut: root.querySelector("#o-amp"),
+      perturb: root.querySelector("#f-perturb"),
+      // 操作
       pause: root.querySelector("#btn-pause"),
       capture: root.querySelector("#btn-capture"),
       reconnect: root.querySelector("#btn-reconnect"),
     };
     this.numFrames = null;
     this._playing = false;
-    this._playTimer = null;
+    this._dragging = false;
     this._wire();
     this._renderOutputs();
   }
 
   // ------------------------------------------------------------ 状态同步 --
 
-  /** 用 `/api/state` 或 `config` 的返回值初始化控件。 */
+  /** 用 `/api/state` 的返回值初始化控件。 */
   applyState(state) {
     if (!state) return;
-    if (state.subject !== undefined) this.el.subject.value = state.subject;
-    if (state.work_name !== undefined) this.el.workName.value = state.work_name;
+    const el = this.el;
+    if (state.subject !== undefined) el.subject.value = state.subject;
+    if (state.work_name !== undefined) el.workName.value = state.work_name;
+
     const model = state.model;
     if (model) {
-      this.el.modelInfo.textContent =
+      this.showModelInfo(
         `${model.num_gaussians ?? "?"} 高斯 · K=${model.num_basis ?? "?"} · ` +
-        `D=${model.num_basis_in ?? "?"} · tex=${model.tex_size ?? "?"}`;
+        `D=${model.num_basis_in ?? "?"} · tex=${model.tex_size ?? "?"}`);
     }
     const render = state.render;
     if (render) {
       if (Array.isArray(render.background)) {
         const key = render.background.join(",");
-        if ([...this.el.bg.options].some((o) => o.value === key)) this.el.bg.value = key;
+        if ([...el.bg.options].some((o) => o.value === key)) el.bg.value = key;
       }
-      if (render.scaling_modifier !== undefined) this.el.scaling.value = render.scaling_modifier;
-      if (render.scale !== undefined) this.el.scale.value = render.scale;
-      if (render.target_fps !== undefined) this.el.fps.value = render.target_fps;
+      if (render.scaling_modifier !== undefined) el.scaling.value = render.scaling_modifier;
+      if (render.scale !== undefined) el.scale.value = render.scale;
+      if (render.target_fps !== undefined) el.fps.value = render.target_fps;
+    }
+    const drive = state.drive;
+    if (drive) {
+      if (typeof drive.frame === "number") el.frame.value = String(drive.frame);
+      if (drive.amplitude !== undefined) el.amp.value = drive.amplitude;
+      if (typeof drive.playing === "boolean") this._setPlayButton(drive.playing);
+      if (typeof drive.perturb === "boolean") el.perturb.checked = drive.perturb;
     }
     if (state.dataset?.num_frames) this.setFrameRange(state.dataset.num_frames);
     this._renderOutputs();
   }
 
-  /** 数据集帧数确定后设置滑块范围（后端 config 里也会给一次）。 */
+  /** 数据集总帧数确定后设置滑块范围。 */
   setFrameRange(n) {
     this.numFrames = n;
     this.el.frame.max = String(Math.max(0, n - 1));
+    this.el.total.textContent = String(n);
     if (Number(this.el.frame.value) > n - 1) this.el.frame.value = String(n - 1);
     this._renderOutputs();
   }
 
   setPaused(paused) {
     this.paused = paused;
-    this.el.pause.textContent = paused ? "继续" : "暂停";
+    this.el.pause.textContent = paused ? "继续推流" : "暂停推流";
   }
 
-  showModelError(text) {
-    this.el.modelInfo.textContent = text;
+  showModelInfo(text) { this.el.modelInfo.textContent = text; }
+  showModelError(text) { this.el.modelInfo.textContent = text; }
+
+  /**
+   * 用**服务端权威**的帧号/播放状态回填控件。
+   * `frame` 在拖动过程中不回填，否则会和手指打架。
+   */
+  applyPlayback({ frame, playing }) {
+    if (typeof frame === "number" && !this._dragging) {
+      this.el.frame.value = String(frame);
+      this._renderOutputs();
+    }
+    if (typeof playing === "boolean") this._setPlayButton(playing);
   }
 
   // ---------------------------------------------------------------- 内部 --
 
+  _setPlayButton(playing) {
+    this._playing = playing;
+    this.el.play.textContent = playing ? "⏸" : "▶";
+    this.el.play.classList.toggle("is-on", playing);
+  }
+
   _wire() {
     const el = this.el;
+
+    // ---- 模型 ----
     el.loadModel.addEventListener("click", () => {
       const subject = el.subject.value.trim();
       const workName = el.workName.value.trim();
@@ -113,62 +156,97 @@ export class Controls {
       this.handlers.onLoadModel({ subject, work_name: workName });
     });
 
-    // 参数类控件：值变即发（音量/滑块的节流交给 _emitParams）
+    // ---- 渲染参数 ----
     el.bg.addEventListener("change", () => this._emitParams());
     el.scaling.addEventListener("input", () => { this._renderOutputs(); this._emitParams(); });
     el.scale.addEventListener("input", () => { this._renderOutputs(); this._emitParams(); });
-    el.fps.addEventListener("input", () => { this._renderOutputs(); this._emitParams(); });
-    el.driveMode.addEventListener("change", () => this._emitParams());
-    el.amp.addEventListener("input", () => { this._renderOutputs(); this._emitParams(); });
 
+    // ---- 播放条 ----
+    el.play.addEventListener("click", () => this._setPlaying(!this._playing));
+
+    el.stepBack.addEventListener("click", () => this.handlers.onStep(-1));
+    el.stepFwd.addEventListener("click", () => this.handlers.onStep(+1));
+
+    // 拖动帧滑块：拖动期间标记，避免服务端回填与手指打架；松手才发消息
+    el.frame.addEventListener("pointerdown", () => { this._dragging = true; });
+    const endDrag = () => {
+      if (!this._dragging) return;
+      this._dragging = false;
+      this._emitParams();
+    };
+    el.frame.addEventListener("pointerup", endDrag);
+    el.frame.addEventListener("pointercancel", endDrag);
+    el.frame.addEventListener("change", endDrag);
+    // 键盘操作滑块（无 pointer 事件）时也要生效
     el.frame.addEventListener("input", () => {
       this._renderOutputs();
-      if (this._playing) return;   // 播放中由定时器推进，避免和手动拖动打架
-      this._emitParams();
+      if (!this._dragging) this._emitParams();
     });
 
-    el.play.addEventListener("change", () => this._setPlaying(el.play.checked));
+    // 数据源：切到 live 时把驱动相关控件置灰
+    el.source.addEventListener("change", () => {
+      this._renderOutputs();
+      this._emitParams();
+    });
+    // 帧数上限：同时是"每秒渲染几帧"与"播放推进速度"
+    el.fps.addEventListener("input", () => { this._renderOutputs(); this._emitParams(); });
 
+    el.perturb.addEventListener("change", () => {
+      this._renderOutputs();
+      this._emitParams();
+    });
+    el.amp.addEventListener("input", () => { this._renderOutputs(); this._emitParams(); });
+
+    // ---- 操作 ----
     el.pause.addEventListener("click", () => this.handlers.onPause(!this.paused));
     el.capture.addEventListener("click", () => this.handlers.onCapture());
     el.reconnect.addEventListener("click", () => this.handlers.onReconnect());
-  }
 
-  /** 循环播放：由前端推进帧号并周期发参数（后端不需要知道"播放"概念）。 */
-  _setPlaying(on) {
-    this._playing = on;
-    if (this._playTimer !== null) {
-      clearInterval(this._playTimer);
-      this._playTimer = null;
-    }
-    if (!on) return;
-    const step = () => {
-      if (!this.numFrames) return;
-      const next = (Number(this.el.frame.value) + 1) % this.numFrames;
-      this.el.frame.value = String(next);
-      this._renderOutputs();
-      this._emitParams();
+    // 键盘：← / → 单步，空格播放/暂停（审查时比点按钮快）
+    this._onKey = (ev) => {
+      const t = ev.target;
+      if (t instanceof HTMLInputElement || t instanceof HTMLSelectElement) return;
+      if (ev.key === "ArrowLeft") { ev.preventDefault(); this.handlers.onStep(-1); }
+      else if (ev.key === "ArrowRight") { ev.preventDefault(); this.handlers.onStep(+1); }
+      else if (ev.key === " ") { ev.preventDefault(); this._setPlaying(!this._playing); }
     };
-    // 12 fps 的推进节奏：足够看出动作，又不至于把控制通道刷满
-    this._playTimer = setInterval(step, 1000 / 12);
+    (eventTarget(this.root)).addEventListener("keydown", this._onKey);
   }
 
-  /** 组装并发送一条 `params` 消息（只发有变化的字段由后端合并，这里全发也无妨）。 */
+  _setPlaying(playing) {
+    this._setPlayButton(playing);
+    // 走统一的 `_emitParams`，而不是只发 `{playing}`。
+    // 这样能把当前帧号一起带上 —— 否则「拖了帧滑块还没松手就点播放」
+    // 会丢失刚选的帧号（拖动期间不发消息，详见 `_dragging` 的处理）。
+    // 播放推进本身仍由**服务端**负责：渲染循环每出一帧推进一次。
+    this._emitParams();
+  }
+
+  /** 组装并发送一条 `params` 消息。 */
   _emitParams() {
     const [r, g, b] = this.el.bg.value.split(",").map(Number);
+    const live = this.el.source.value === "live";
+
+    const drive = {};
+    if (!live) {
+      // **没有** drive.mode：是否推进帧号只由 `playing` 表达。
+      // 暂停 ≠ 停止渲染，只是帧号停住（渲染仍按帧数上限全速进行）。
+      drive.frame = Number(this.el.frame.value);
+      drive.playing = this._playing;
+      drive.perturb = this.el.perturb.checked;
+      drive.amplitude = Number(this.el.amp.value);
+    }
+
     this.handlers.onParams({
       type: "params",
+      source: { kind: this.el.source.value },
       render: {
         background: [r, g, b],
         scaling_modifier: Number(this.el.scaling.value),
         scale: Number(this.el.scale.value),
         target_fps: Number(this.el.fps.value),
       },
-      drive: {
-        mode: this.el.driveMode.value,
-        frame: Number(this.el.frame.value),
-        amplitude: Number(this.el.amp.value),
-      },
+      drive,
     });
   }
 
@@ -180,13 +258,34 @@ export class Controls {
     el.frameOut.textContent = el.frame.value;
     el.ampOut.textContent = Number(el.amp.value).toFixed(2);
 
-    // 扰动幅度只在随机模式下有意义
-    const random = el.driveMode.value === "random";
-    el.amp.disabled = !random;
-    el.frame.disabled = random;
+    const live = el.source.value === "live";
+    el.player.classList.toggle("is-live", live);
+
+    el.perturb.disabled = live;
+    el.amp.disabled = live || !el.perturb.checked;
+    // live 下帧号不适用
+    el.frame.disabled = live;
+    el.stepBack.disabled = live;
+    el.stepFwd.disabled = live;
   }
 
   destroy() {
-    if (this._playTimer !== null) clearInterval(this._playTimer);
+    if (this._onKey) {
+      (eventTarget(this.root)).removeEventListener("keydown", this._onKey);
+    }
   }
+}
+
+/**
+ * 取"挂键盘监听的宿主"。
+ *
+ * 浏览器里 `root` 就是 `document`；但测试用最小桩时它只是个普通对象，
+ * 那种情况下退回全局 `document`（测试会提供）。
+ */
+function eventTarget(root) {
+  if (typeof root.addEventListener === "function") return root;
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    return document;
+  }
+  throw new Error("找不到可挂载键盘监听的宿主");
 }

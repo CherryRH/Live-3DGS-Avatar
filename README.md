@@ -44,7 +44,7 @@
 
 ```bash
 git clone https://github.com/CherryRH/Live-3DGS-Avatar && cd Live3DGSAvatar
-bash scripts/setup_env.sh
+bash setup_env.sh
 conda activate live3dgs
 ```
 
@@ -90,14 +90,20 @@ python scripts/equivalence_check.py \
     --ply <PATH>/model.ply --data <DATA_DIR> --frames 3
 ```
 
-GUI 前端可独立预览（mock 模式，无需后端）：
+### 图形界面（实时预览）
+
+```bash
+bash setup_env.sh      # 首次：建环境（含 FastAPI / uvicorn）
+bash run_gui.sh        # 启动服务，浏览器打开 http://127.0.0.1:8000
+```
+
+不带后端只看界面（mock 模式，本地生成画面）：
 
 ```bash
 cd web && python3 -m http.server 8912   # 浏览器打开 http://127.0.0.1:8912
-node web/tests/all.mjs                  # 前端自检
 ```
 
-> GUI 后端（FastAPI + uvicorn）待做，协议见 [`docs/GUI_PROTOCOL.md`](docs/GUI_PROTOCOL.md)。
+> 协议见 [`docs/GUI_PROTOCOL.md`](docs/GUI_PROTOCOL.md)；前端说明见 [`web/README.md`](web/README.md)。
 > 训练由合作方提供（见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §6）。
 
 ## 文档

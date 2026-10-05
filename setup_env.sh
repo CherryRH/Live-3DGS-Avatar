@@ -6,9 +6,9 @@
 # （nvdiffrast / fused-ssim / diff-gaussian-rasterization，全部从 submodules/ 构建）
 #
 # 用法：
-#   bash scripts/setup_env.sh                                     # 建在 miniconda3/envs/live3dgs（推荐）
-#   ENV_PREFIX=$PWD/.conda/envs/live3dgs bash scripts/setup_env.sh # 建在工作区内
-#   FORCE=1 bash scripts/setup_env.sh                             # 已存在则重建
+#   bash setup_env.sh                                     # 建在 miniconda3/envs/live3dgs（推荐）
+#   ENV_PREFIX=$PWD/.conda/envs/live3dgs bash setup_env.sh # 建在工作区内
+#   FORCE=1 bash setup_env.sh                             # 已存在则重建
 #
 # 幂等：重复执行会跳过已完成步骤。
 # =============================================================================
@@ -29,7 +29,7 @@ TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"   # RTX 3060 = sm_86
 MAX_JOBS="${MAX_JOBS:-1}"                             # WSL 内存有限，限制并发
 NVCC_THREADS="${NVCC_THREADS:-2}"
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBMODULES="$REPO_ROOT/submodules"
 
 # 若指定 ENV_PREFIX 则用 -p，否则用 -n（建在 conda 默认位置）
@@ -123,6 +123,26 @@ fi
 
 pip install -r "$REPO_ROOT/requirements.txt"
 
+# ------------------------------- 4.5 本项目（可编辑安装）----
+# 让 `import live3dgsavatar` 与 `python -m live3dgsavatar.app` 可用。
+#
+# ⚠️ 必须加 --no-deps：本项目的运行期依赖（torch 与三个 CUDA 扩展）有自己的
+#    安装顺序与 --no-build-isolation 要求（见 docs/ENVIRONMENT.md §2）。
+#    让 pip 顺着 pyproject 去解析它们会与上面的步骤打架。
+log "以可编辑模式安装本项目（--no-deps）"
+pip install --no-deps --no-build-isolation -e "$REPO_ROOT"
+
+# 自检：装不上就当场报错，而不是等到 run_gui.sh 才 ModuleNotFoundError
+python - <<'PY' || die "本项目安装失败：import live3dgsavatar 不通过"
+import sys
+try:
+    import live3dgsavatar
+except ImportError as e:
+    print(f"  import live3dgsavatar 失败：{e}", file=sys.stderr)
+    sys.exit(1)
+print(f"  live3dgsavatar  {live3dgsavatar.__file__}")
+PY
+
 # 校验 numpy 与 chumpy 的实际落点（chumpy 依赖 numpy 2.x 兼容补丁）
 python - <<'PY'
 import numpy
@@ -190,5 +210,8 @@ $(printf '\033[1;32m')环境就绪$(printf '\033[0m')
 
   GPU 渲染测试（需可用的 NVIDIA GPU）：
       python scripts/render_test.py --frames 20
+
+  GUI（P2，浏览器实时预览）：
+      bash run_gui.sh
 
 EOF

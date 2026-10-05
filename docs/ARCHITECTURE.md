@@ -111,6 +111,9 @@ app → runtime → training → core → ext
 
 规则：
 - `core/` **不得** import `training/`、`data/`、`app/`、`tracking/`。
+- `src/` **不得** import `tests/` —— `tests/` 不是包（无 `__init__.py`），
+  只能靠 `sys.path` 找到。曾因此 `ModuleNotFoundError: No module named 'tests'`：
+  参照实现适配层原本放在 `tests/` 下，被 `data/scene.py` 引用。现已移入 `data/reference.py`。
 - `core/` **不得**做文件 I/O 与参数解析（`avatar.py` 的 `save/load` 除外，见 §3.6）。
 - `submodules/` 只被 `core/render/` 引用，其他任何地方不得直接 import。
 
@@ -164,12 +167,14 @@ Live3DGSAvatar/
 │   │   └── render/
 │   │       ├── rasterizer.py    # Rasterizer 协议 + 两个实现
 │   │       └── camera_utils.py  # 矩阵转置/列主序转换的唯一入口
-│   ├── data/                    # P2（INSTA 格式读取、local-global 采样池）
+│   ├── data/                    # 数据层（无 GPU 计算，只做加载与适配）
+│   │   ├── scene.py             #   模板几何 + 相机 + 逐帧 mesh/驱动参数
+│   │   └── reference.py         #   参照实现适配（等价门与渲染测试用）
 │   ├── training/                # 待接入（不自研，见 ARCHITECTURE §6）
 │   ├── tracking/                # P4（Tracker 协议 + 离线 metrical-tracker 适配）
 │   ├── runtime/                 # P2/P3（AvatarRuntime 门面、服务端会话）
 │   ├── streaming/               # P3（编码/传输）
-│   ├── app/                     # P2（GUI 后端：FastAPI + uvicorn；待做）
+│   ├── app/                     # P2 GUI 后端：protocol / session / server
 │   └── compat/
 │       └── __init__.py          # 第三方兼容补丁（numpy 2.x 别名等）
 ├── submodules/                  ← 全部 vendored，统一从此处构建
@@ -182,15 +187,16 @@ Live3DGSAvatar/
 ├── tests/
 │   ├── run_tests.py             # 零依赖测试运行器（未装 pytest 也能跑）
 │   ├── support.py               # 参照加载与比较工具
-│   ├── reference_scene.py       # 参照侧几何/相机适配（脚本用，不属 core）
 │   ├── unit/                    # 单测（74 项，全部无需 GPU）
 │   └── equivalence/             # 数值等价门（stages.py + GPU 测试）
 ├── scripts/
-│   ├── setup_env.sh             # 一键建环境（幂等）—— P0
 │   ├── env_check.py             # 环境自检（无 GPU 可跑）—— P0
 │   ├── render_test.py           # 统一渲染测试：core vs 参照 vs 数据集原图 —— P1
 │   ├── equivalence_check.py     # 数值等价验收门（与参照逐层比对）—— P1
 │   └── _compat_shim.py          # 独立脚本用的精简兼容补丁
+├── pyproject.toml               # 打包配置（src 布局 + console script）
+├── setup_env.sh                 # 一键建环境（顶层，用户直接跑）
+├── run_gui.sh                   # 一键启动 GUI 服务（顶层）
 ├── web/                         # GUI 前端（无构建步骤，原生 ES modules）—— 已完成
 ├── models/                      # 本项目模型（<模型名>/<工作名>/model.ply，gitignore）
 ├── data/                        # 输入资产（gitignore）
@@ -338,7 +344,7 @@ class Session:
    否则 pip 不会自动准备构建依赖，报 `Failed to build installable wheels for ...`。
 3. **扩展用 `pip install -e`（editable）**：`.so` 落在源码目录内，便于用 `git status` 发现产物与源码不同步。
 
-一键脚本 `scripts/setup_env.sh` 已把上述规则固化，幂等可重跑。
+一键脚本 `setup_env.sh` 已把上述规则固化，幂等可重跑。
 
 ### 8.3 数据与模型资产（当前仅 `duda`）
 
@@ -367,7 +373,7 @@ class Session:
 |---|---|---|---|
 | **P0 基线与环境** | 环境可复现 + 基线可复现 | ① 单条命令从零建环境 ② `scripts/env_check.py` 全绿 ③ 用 `duda` 的 `model.ply` 跑通渲染并记录 **FPS / 峰值显存 / 单帧耗时** | ✅ 全部完成 |
 | **P1 只读内核重写** | `core/` 完成，行为与 RGBAvatar 一致 | **数值等价门**：分层比对参照实现，中间属性 `max\|Δ\| < 1e-5`，渲染图 **`PSNR > 60 dB` 或 `max\|Δ\| < 1e-3`**；`tests/equivalence/` 全绿 | ✅ **已验收**（见 9.2） |
-| **P2 应用层 + GUI** | 图形化程序；训练接入点就位 | ① 能读取已有模型并实时预览 ② 训练按 §6 的接入点预留，**待接入**（不自研） | 前端 ✅ / **后端待做**（协议见 `docs/GUI_PROTOCOL.md`） |
+| **P2 应用层 + GUI** | 图形化程序；训练接入点就位 | ① 能读取已有模型并实时预览 ② 训练按 §6 的接入点预留，**待接入**（不自研） | ✅ 前后端完成（协议见 `docs/GUI_PROTOCOL.md`）；**待你首次联调** |
 | **P3 服务化** | 服务端渲染 + 推流 | 端到端延迟 **< 150 ms**（目标 100 ms）；单路稳定 10 分钟 | 未开始 |
 | **P4 动态更新** | 在线训练 | 按帧顺序在线重建，PSNR 与离线差距 **< 1 dB** | 未开始 |
 

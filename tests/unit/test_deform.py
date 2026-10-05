@@ -549,7 +549,7 @@ def test_matrix_to_quaternion_matches_branchwise_reference() -> None:
     新实现一次算四个 Shepperd 候选、各自归一化后取范数最大者，完全向量化。
 
     ⚠️ 本测试必须**覆盖全部四个分支**，否则可能"某些分支恰好对"而漏掉错误
-    （改动过程中我曾连续三次写错分支公式，单分支用例都通过）。
+    （判据写错时单分支用例仍会通过，因此必须断言四个分支都被覆盖。）
     """
     from live3dgsavatar.core.deform.bind import (
         _matrix_to_quaternion_branchwise as branchwise,

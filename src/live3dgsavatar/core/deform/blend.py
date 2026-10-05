@@ -87,7 +87,7 @@ class GaussianBlendField:
         在 CUDA 不可用时（例如 CPU 张量、无可用设备）会**静默返回全零**而不报错，
         参照实现默认走这条路。纯 PyTorch 版在本项目实测下与 CUDA 版数值等价
         （见 tests/unit/test_deform.py 与 tests/equivalence/），且形状错误会显式报错，
-        因此在 P1 阶段作为默认。
+        因此作为默认。
         训练态若需省显存，在确认设备可用后显式传 `use_cuda_kernel=True`。
     """
 

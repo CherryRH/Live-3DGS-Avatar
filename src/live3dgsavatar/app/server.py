@@ -119,7 +119,7 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
         session.cfg.get("app.stats_log_interval_s", 10.0))
     stats_window_s = max(3.0, stats_log_interval_s)
     # `status` 的推送节奏。**必须周期性推** —— 否则播放时前端的帧号条不会动
-    # （曾只在控制消息后才回 status，导致"暂停时才突然更新"）。
+    # ⚠️ 必须周期性推：只在控制消息后回 status 会让播放时的帧号条不动。
     # 4 Hz：人手感知足够，又不至于刷满控制通道。
     status_interval_s = max(0.05, float(
         session.cfg.get("app.status_interval_s", 0.25)))
@@ -199,12 +199,20 @@ async def _serve_client(app: FastAPI, ws: WebSocket, session: Session) -> None:
             # 后端吞吐统计与周期日志
             window.add(now)
             if logger_.due(now):
+                # `overhead` = 整帧耗时 − (deform + raster)。
+                # 它应当是 0.1–0.5 ms 量级（to_thread 派发 + 打包 + 入队）。
+                # 若显著偏大，说明**事件循环被别的东西占住**，而不是渲染慢 ——
+                # 这是判断"要不要把某段搬到别的线程"的唯一依据。
+                gpu_ms = session.last_deform_ms + session.last_rasterize_ms
+                overhead_ms = session.last_frame_ms - gpu_ms
                 logger.info(
                     "[stats] %.1fs  渲染 %d 帧  平均 %.1f FPS  平均 %.2f ms/帧"
-                    "（deform %.2f / raster %.2f）峰值显存 %.0f MiB  丢帧 %d",
+                    "（deform %.2f + raster %.2f + 其它 %.2f）"
+                    "峰值显存 %.0f MiB  丢帧 %d",
                     stats_log_interval_s, session.frames_rendered,
                     window.rate(now), session.last_frame_ms,
                     session.last_deform_ms, session.last_rasterize_ms,
+                    overhead_ms,
                     session.peak_memory_mib, session.frames_dropped)
 
             # 帧数上限：上一轮没超时就等满间隔；超时则立刻继续（不补帧）
@@ -339,10 +347,9 @@ def _status_payload(session: Session) -> dict:
 class NoCacheStaticFiles(StaticFiles):
     """静态文件**禁用缓存**。
 
-    开发期我们频繁改 `web/` 下的前端，而 `StaticFiles` 只发 `ETag` /
+    开发期频繁改 `web/` 下的前端，而 `StaticFiles` 只发 `ETag` /
     `Last-Modified`、**不发 `Cache-Control`**，浏览器会走启发式缓存 ——
-    结果是「改了前端却看不到变化」（曾实际发生：播放条与 FPS 都没出现）。
-    宁可每次多传几十 KB，也不要让人怀疑代码没生效。
+    表现为「改了前端却看不到变化」。宁可每次多传几十 KB。
     """
 
     def file_response(self, *args, **kwargs):        # type: ignore[override]
@@ -373,7 +380,6 @@ def make_dualstack_socket(port: int, backlog: int = 128) -> socket.socket:
     而 `localhost` 在 /etc/hosts 里**优先解析为 `::1`**，浏览器打开
     `http://localhost:8000` 会先试 `::1` —— 只绑 IPv4 时 Windows 浏览器
     报「无法连接」，而 VS Code 内置浏览器（走 127.0.0.1）却正常。
-    这正是曾实际踩到的现象。
 
     做法：绑 `::` 并显式关闭 `IPV6_V6ONLY`，得到一个 dual-stack socket。
     此时 IPv4 连接以 v4-mapped 地址到达，两种写法都通。

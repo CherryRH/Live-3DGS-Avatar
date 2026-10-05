@@ -63,7 +63,7 @@ runtime:
   device: cuda          # cuda | cpu（cpu 仅供不依赖 CUDA 内核的自检）
   split: all            # 参照数据集切分：all | train | test
 
-# GUI 服务（P2）。仅本地单用户使用，不做鉴权、不绑公网地址。
+# GUI 服务。仅本地单用户使用，不做鉴权、不绑公网地址。
 app:
   # ⚠️ 用 `localhost` 而**不是** `127.0.0.1`。
   # 本机 /etc/hosts 里 `localhost` 优先解析为 IPv6 `::1`，而浏览器对

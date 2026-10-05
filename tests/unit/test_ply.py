@@ -220,7 +220,7 @@ def test_load_rejects_tex_size_too_small_for_gaussians(tmp_path) -> None:
     `tex_size` 不参与存储（它只决定 UV texel 的容量上界 `tex_size²`），
     因此**无法**从文件反推；但配错时必须显式报出，
     否则会把错误配置静默带进后续的保存/重建。
-    曾实测：`tex_size=128`（上界 16384）加载 60353 个高斯**不报错**。
+    实测：`tex_size=128`（上界 16384）加载 60353 个高斯**不报错**。
     """
     from live3dgsavatar.core.avatar import AvatarConfig
     from live3dgsavatar.core.io import load_ply, save_ply

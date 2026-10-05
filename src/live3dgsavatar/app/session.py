@@ -153,8 +153,8 @@ class Session:
         cfg = self.cfg
         model_ply = resolve_model_ply(cfg)
         # 预载帧数：默认 -1（全部）。帧数据很小（254 帧约 15 MiB），
-        # 载入全部才能让「数据集帧」滑块走满全程 —— 曾误用 `render.frames`(=20)，
-        # 结果只能播前 20 帧。
+        # 载入全部才能让「数据集帧」滑块走满全程。
+        # ⚠️ 不要改用 `render.frames`（那是渲染测试的采样量，会让滑块被夹住）。
         preload = int(cfg.get("app.preload_frames", -1))
         scene = load_scene(cfg, frames=preload)
 

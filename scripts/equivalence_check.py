@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P1 数值等价验收门 —— 与参照实现（RGBAvatar）逐阶段比对。
+"""数值等价验收门 —— 与参照实现（RGBAvatar）逐阶段比对。
 
 判据（见 docs/CONVENTIONS.md §6.1）：
 
@@ -63,7 +63,7 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 def parse_args() -> argparse.Namespace:
     """命令行参数 = **对配置文件的覆盖层**（默认量集中在 configs/）。"""
     p = argparse.ArgumentParser(
-        description="P1 数值等价验收门",
+        description="数值等价验收门（与参照实现逐阶段比对）",
         epilog="默认值来自 configs/*.yaml；用 python scripts/show_config.py 查看。")
     p.add_argument("--config-dir", type=Path, default=None)
     p.add_argument("--reference", type=Path, default=None,

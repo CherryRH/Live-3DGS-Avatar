@@ -204,7 +204,7 @@ def compare_deformed(report: EquivalenceReport, avatar, ref_model,
                      mesh_ref: torch.Tensor, mesh_mine, blend_weight: torch.Tensor):
     """mesh_binding（切空间 → 世界空间）。**全部属性都与参照判等。**
 
-    曾一度在这里标注"位置项有意偏离"，那是**错误的**：经复查，
+    ⚠️ 不要在这里标注"位置项有意偏离"：经复查，
     本项目与参照都用 `R @ xyz`（`R` 的列为基向量），位置应当一致。
     当时看到的 9.87e-02 差异是本项目多用了一次转置（`Rᵀ`）造成的 bug，
     已在 `core/deform/bind.py` 修正。

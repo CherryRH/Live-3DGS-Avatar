@@ -318,7 +318,7 @@ def test_batched_deform_equals_per_frame_deform() -> None:
 
     ⚠️ 逐帧的网格**直接切自批网格**（`verts` / `faces` / `uvs` 全部取自同一份），
     不能各自调 `_tiny_mesh` —— 那样 `uvs` 会因 RNG 状态不同而不同，
-    导致测的其实是`不同的 UV 参数化`，而不是批量与逐帧的差异（曾误判为产品 bug）。
+    导致测的其实是**不同的 UV 参数化**，而不是批量与逐帧的差异。
     """
     from live3dgsavatar.core.types import Mesh
 

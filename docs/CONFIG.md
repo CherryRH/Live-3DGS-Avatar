@@ -66,7 +66,7 @@ python scripts/show_config.py --json          # 机器可读
 | `app.status_interval_s` | `status` 消息推送间隔（秒）。前端据此更新帧号条；太小占满通道，太大帧号一跳一跳 |
 | `app.stats_log_interval_s` | 后端统计日志间隔（秒）。日志走 stdout，与前端 FPS 解耦 |
 | `app.autostart` | 打开页面是否自动推帧 |
-| `app.preload_frames` | GUI 启动时预载帧数。**`-1`（默认）表示全部** —— 设小会让「数据集帧」滑块被夹在已载入范围（曾因此只能播前 20 帧） |
+| `app.preload_frames` | GUI 启动时预载帧数。**`-1`（默认）表示全部**。设小会让「数据集帧」滑块被夹在已载入范围内 |
 
 ### 模型目录约定（与 RGBAvatar 的 `--subject` / `--work_name` 保持一致）
 

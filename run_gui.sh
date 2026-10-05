@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 一键启动 GUI 服务（P2）—— 浏览器实时预览。
+# 一键启动 GUI 服务 —— 浏览器实时预览。
 #
 # 用法：
 #   bash run_gui.sh                     # 默认读 configs/system.yaml 的 app.host / app.port

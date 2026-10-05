@@ -6,24 +6,19 @@
 其中 `R = TBN[face_id]`，**列 j 是第 j 个基向量**（见 `tbn.py`），
 `bary = binding_face_bary`。
 
-## 为什么是 `R` 而不是 `Rᵀ`（一个曾反复踩的坑）
+## 为什么是 `R · x` 而不是 `Rᵀ · x`
 
-`mesh_binding` 是**逐元素**的，`R` 是否正交只影响「用什么算子把切空间坐标
-变到世界空间」，不影响「哪个算子对」。判据只能是**与参照一致**，而不是自证。
+`mesh_binding` 是**逐元素**算子：`R` 与 `Rᵀ` 都数学自洽，
+**唯一有效判据是与参照逐位一致**（参照 `gaussian_deform_batch` 用
+`binding_rotations @ gs.xyz`）。⚠️ 切勿改成 `Rᵀ`。
 
-**证据链**（两条独立证据互相印证）：
+**易混淆点**：CUDA `face_tbn.cu` 里 `TBNs[idx] = transpose(mat3(t,b,n))`
+（**行**为基），而 Python 侧的 `utils.compute_face_tbn` 与本项目 `tbn.py`
+都是**列**为基 —— 两者互为转置，**切勿跨来源比对**。`mesh_binding` 内部那次
+`transpose` 是针对**调用方传入布局**的修正，不能脱离"传入的是什么"来判断。
 
-1. 本项目等价门曾在位置项报差 **9.87e-02** —— 当时本项目用 `Rᵀ`，
-   而参照 `gaussian_deform_batch` 产出 `R·x`（`binding_rotations @ gs.xyz`）：
-   `‖Rᵀ − R‖` 在非正交 `R` 下正是该量级；
-2. 改为 `R·x` 后，`scripts/render_test.py` 中 core 与参照的 254 帧渲染
-   **PSNR 中位 101 dB、max|Δ| = 1/255** —— 逐位一致。
-
-**易混淆点**：CUDA `face_tbn.cu` 内部 `TBNs[idx] = transpose(mat3(t,b,n))`
-（**行**为基），而 `cuda_utils` 之外、Python 侧的 `utils.compute_face_tbn` 与
-本项目 `tbn.py` 都是**列**为基。两者互为转置，切勿跨来源比对。
-`mesh_binding` 接收的是**调用方传入**的 `face_tbns`，因此其内部那次 `transpose`
-是针对「传入布局」的修正。
+回归测试：`test_bind_matches_reference_translation`、
+`test_mesh_binder_uses_R_not_transpose`。详见 `docs/MIGRATION.md` D 节。
 """
 
 from __future__ import annotations
@@ -57,7 +52,7 @@ def matrix_to_quaternion(m: torch.Tensor) -> torch.Tensor:
     `torch.nonzero` 分支。`nonzero` 的输出形状依赖数据，会强制 GPU 同步
     （device→host 往返），在逐帧路径上是明显开销。
 
-    ⚠️ **判据必须与参照一致**，不能图省事改成"选范数最大的候选"：
+    ⚠️ **分支判据必须与参照一致**，不能图省事改成"选范数最大的候选"：
     虽然那在纯旋转下等价（且数值上更稳），但对**非正交矩阵**（真实 TBN 就是）
     会选到**不同的分支**，从而给出不同的四元数 —— 那就不再与参照逐位一致。
 
@@ -187,9 +182,8 @@ class MeshBinder:
     对应 CUDA 的 `mesh_binding`。
 
     ⚠️ **面 TBN 不能跨帧缓存**：`TBN = f(face_vertices, face_uvs)` 中的
-    `face_vertices` 来自**当前帧的 `mesh.verts`**，随帧变化。
-    只有 UV 与拓扑是固定的。（曾误以为 TBN 只依赖模板而加缓存，
-    结果绑定结果错到 2.8，已被等价测试当场抓住。）
+    `face_vertices` 来自**当前帧的 `mesh.verts`**，随帧变化；只有 UV 与拓扑固定。
+    虽有缓存诱惑，但无法复用 —— `tests/unit/test_deform.py` 会抓住这类错误。
     """
 
     def __init__(self, binding: Binding) -> None:

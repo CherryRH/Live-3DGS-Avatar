@@ -2,7 +2,7 @@
 
 **层次**：这是**数据层**（`data/`）。放在包里（而非 `tests/`）的理由：
 `core/` 与 `app/` 都可能需要读取参照侧的数据集，而 **`src/` 不应依赖 `tests/`**
-（`tests/` 不是包，只能靠 `sys.path` 找到；曾因此 `ModuleNotFoundError: No module named 'tests'`）。
+（`tests/` 不是包，只能靠 `sys.path` 找到；因此 `src/` 不得依赖它）。
 
 
 **参照仓库为只读**：这里只 import，不修改。

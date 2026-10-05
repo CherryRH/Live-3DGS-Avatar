@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Live3DGSAvatar 环境初始化脚本（P0）
+# Live3DGSAvatar 环境初始化脚本
 #
 # 在独立 conda 环境中完成：CUDA 13.0 + PyTorch + 三个本地扩展
 # （nvdiffrast / fused-ssim / diff-gaussian-rasterization，全部从 submodules/ 构建）
@@ -211,7 +211,7 @@ $(printf '\033[1;32m')环境就绪$(printf '\033[0m')
   GPU 渲染测试（需可用的 NVIDIA GPU）：
       python scripts/render_test.py --frames 20
 
-  GUI（P2，浏览器实时预览）：
+  GUI（浏览器实时预览）：
       bash run_gui.sh
 
 EOF

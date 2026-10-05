@@ -1,6 +1,6 @@
-# P0 环境搭建与复现
+# 环境搭建与复现
 
-> 目标：一条命令得到一个可复现的、与 P1/P2 兼容的开发环境。
+> 目标：一条命令得到一个可复现的开发环境。
 > **环境配置成功与否，以你执行 `setup_env.sh` 的结果为准。**
 
 ---
@@ -185,7 +185,7 @@ pip install chumpy --no-build-isolation
 
 ---
 
-## 3.9 nvdiffrast 没有 CPU 后端
+### 3.9 nvdiffrast 没有 CPU 后端
 
 `nvdiffrast.torch.RasterizeGLContext` 在当前版本**只是 `RasterizeCudaContext` 的兼容包装**
 （构造时会发出 `DeprecationWarning`）。也就是说：
@@ -199,7 +199,7 @@ pip install chumpy --no-build-isolation
 
 ---
 
-## 3.10 兼容补丁必须在导入 chumpy **之前**生效
+### 3.10 兼容补丁必须在导入 chumpy **之前**生效
 
 chumpy 0.70 依赖 numpy 已移除的别名（`np.int` / `np.float` / `np.object` …），
 故 `src/live3dgsavatar/compat/__init__.py` 在**导入期**补齐这些别名。
@@ -221,7 +221,7 @@ ImportError: cannot import name 'int' from 'numpy'
 
 ---
 
-## 3.11 FLAME 的 dtype 不得覆盖（float64 是刻意的）
+### 3.11 FLAME 的 dtype 不得覆盖（float64 是刻意的）
 
 `FLAMEDataset` 把姿态/形状参数存为 **float64**，而 `FLAME` 的 `v_template` / `shapedirs`
 跟随 `FlameConfig.dtype`。若把 dtype 改成 float32，会在

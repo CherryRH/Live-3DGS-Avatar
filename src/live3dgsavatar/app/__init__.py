@@ -1,4 +1,4 @@
-"""GUI 应用层（P2）。
+"""GUI 应用层。
 
 - `protocol.py`：协议编解码与背压工具（**纯函数，不依赖 FastAPI/torch**）
 - `session.py` ：渲染会话（唯一接触 GPU 与 `core/` 的部分）

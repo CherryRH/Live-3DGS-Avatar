@@ -98,8 +98,7 @@ function updateStats(status) {
   }
   // 帧号与播放状态以**后端**为准，避免两端各记一份而漂移。
   // 后端按 app.status_interval_s（默认 4 Hz）周期推 status，
-  // 因此播放时帧号条会平滑推进（曾只在控制消息后回 status，
-  // 表现为"暂停时才突然更新"）。
+  // 因此播放时帧号条会平滑推进（只在控制消息后回 status 则不会动）。
   if (typeof status.frame === "number" || typeof status.playing === "boolean") {
     controls.applyPlayback({ frame: status.frame, playing: status.playing });
   }

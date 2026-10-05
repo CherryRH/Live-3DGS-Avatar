@@ -12,12 +12,12 @@
 
 **目标**：定义一个**足够简单、可落地、可扩展**的工程架构，把 RGBAvatar 的算法能力内化成本项目自己的代码，并支撑后续的视频通话场景扩展。
 
-**明确不做**（本阶段）：
+**明确不做**：
 - 不追求架构完备性。层级只到"能隔离变化"为止，不做插件框架、不做通用中间表示、不做多后端抽象。
 - 不考虑非 NVIDIA 平台。CUDA 13.0 为唯一目标工具链。
-- 不引入 VoluMe 等前馈路线。见附录 A（未来工作）。
+- 不引入 VoluMe 等前馈路线。见 §11（后续方向）。
 
-**评审要点**：请重点看 §3（接口契约）、§4（目录结构）、§5（迁移映射）、§9（验收门）四节。其余为实现细节。
+**建议阅读顺序**：§2（分层）→ §3（接口契约）→ §4（目录结构）→ §9（当前状态与验收）。其余为实现细节。
 
 ---
 
@@ -58,7 +58,7 @@
 
 搭建脚本、版本矩阵、排错表见 **`docs/ENVIRONMENT.md`**。
 
-> **说明**：6 GB 显存是本机训练的限制项，但不是架构约束——训练可放实验室服务器。本机足以完成 P0–P1（复现 + 重写验证）。
+> **说明**：6 GB 显存是本机训练的限制项，但不是架构约束——训练可放实验室服务器。本机足以完成复现与内核重写验证。
 
 ---
 
@@ -112,9 +112,9 @@ app → runtime → training → core → ext
 规则：
 - `core/` **不得** import `training/`、`data/`、`app/`、`tracking/`。
 - `src/` **不得** import `tests/` —— `tests/` 不是包（无 `__init__.py`），
-  只能靠 `sys.path` 找到。曾因此 `ModuleNotFoundError: No module named 'tests'`：
+  只能靠 `sys.path` 找到：
   参照实现适配层原本放在 `tests/` 下，被 `data/scene.py` 引用。现已移入 `data/reference.py`。
-- `core/` **不得**做文件 I/O 与参数解析（`avatar.py` 的 `save/load` 除外，见 §3.6）。
+- `core/` **不得**做文件 I/O 与参数解析（`avatar.py` 的 `save/load` 除外，见 §9.3）。
 - `submodules/` 只被 `core/render/` 引用，其他任何地方不得直接 import。
 
 ---
@@ -130,10 +130,10 @@ app → runtime → training → core → ext
 | `GaussianSet` | `core/types.py` | 跨层唯一数据契约 | batch-first；存**已激活**物理量；带 `space` 标注 |
 | `Mesh` / `Camera` / `Frame` | `core/types.py` | 几何、相机、单帧输入 | `Camera` 只存 `K` 与 `w2c`，其余派生 |
 | `BlendField` | `core/deform/blend.py` | `[B,D]` 驱动参数 → 切空间高斯 | `opacity`/`scaling` **不参与混合** |
-| `Binder` | `core/deform/bind.py` | 切空间 → 世界空间 | 位置用 **`R·x`**（`R` 列为基；布局易错，见 MIGRATION D.1） |
+| `Binder` | `core/deform/bind.py` | 切空间 → 世界空间 | 位置用 **`R·x`**（`R` 列为基；布局易错，见 `docs/CONVENTIONS.md` §3.2.1） |
 | `Rasterizer` | `core/render/rasterizer.py` | 世界空间高斯 → 图像 | 唯一接触 CUDA 扩展的位置 |
 | `GaussianAvatar` | `core/avatar.py` | 参数容器 + PLY 序列化 | 网络结构由 `AvatarConfig` 显式给出 |
-| `AvatarRuntime` | `runtime/`（P2） | 组装门面：`setup/train/render/update` | — |
+| `AvatarRuntime` | `runtime/`（待实现） | 组装门面：`setup/train/render/update` | — |
 
 **约定摘要**（详见 `docs/CONVENTIONS.md`）：
 
@@ -149,9 +149,9 @@ app → runtime → training → core → ext
 Live3DGSAvatar/
 ├── docs/
 │   ├── ARCHITECTURE.md          ← 本文档
-│   ├── ENVIRONMENT.md           ← 环境搭建、版本矩阵、排错（P0 已完成）
-│   ├── CONVENTIONS.md           ← 坐标系与数值约定（P1 产出）
-│   └── MIGRATION.md             ← 与 RGBAvatar 的行为差异清单（P1 产出）
+│   ├── ENVIRONMENT.md           ← 环境搭建、版本矩阵、排错
+│   ├── CONVENTIONS.md           ← 坐标系与数值约定
+│   └── MIGRATION.md             ← 与 RGBAvatar 的行为差异清单
 ├── configs/                     ← system.yaml / render.yaml（见 docs/CONFIG.md）
 ├── src/live3dgsavatar/
 │   ├── core/
@@ -171,10 +171,10 @@ Live3DGSAvatar/
 │   │   ├── scene.py             #   模板几何 + 相机 + 逐帧 mesh/驱动参数
 │   │   └── reference.py         #   参照实现适配（等价门与渲染测试用）
 │   ├── training/                # 待接入（不自研，见 ARCHITECTURE §6）
-│   ├── tracking/                # P4（Tracker 协议 + 离线 metrical-tracker 适配）
-│   ├── runtime/                 # P2/P3（AvatarRuntime 门面、服务端会话）
-│   ├── streaming/               # P3（编码/传输）
-│   ├── app/                     # P2 GUI 后端：protocol / session / server
+│   ├── tracking/                # 待实现（Tracker 协议 + 离线 metrical-tracker 适配）
+│   ├── runtime/                 # 待实现（AvatarRuntime 门面、服务端会话）
+│   ├── streaming/               # 待实现（编码/传输）
+│   ├── app/                     # GUI 后端：protocol / session / server
 │   └── compat/
 │       └── __init__.py          # 第三方兼容补丁（numpy 2.x 别名等）
 ├── submodules/                  ← 全部 vendored，统一从此处构建
@@ -182,17 +182,17 @@ Live3DGSAvatar/
 │   ├── diff-gaussian-rasterization/   # 唯一的 CUDA 内核
 │   ├── nvdiffrast/                    # UV 域光栅化
 │   ├── fused-ssim/                    # 多视角 SSIM（可选）
-│   ├── flame/                         # P1 拷入
-│   └── fuhead/                        # P1 拷入
+│   ├── flame/                         # 待拷入
+│   └── fuhead/                        # 待拷入
 ├── tests/
 │   ├── run_tests.py             # 零依赖测试运行器（未装 pytest 也能跑）
 │   ├── support.py               # 参照加载与比较工具
-│   ├── unit/                    # 单测（74 项，全部无需 GPU）
+│   ├── unit/                    # 单测（119 项，全部无需 GPU）
 │   └── equivalence/             # 数值等价门（stages.py + GPU 测试）
 ├── scripts/
-│   ├── env_check.py             # 环境自检（无 GPU 可跑）—— P0
-│   ├── render_test.py           # 统一渲染测试：core vs 参照 vs 数据集原图 —— P1
-│   ├── equivalence_check.py     # 数值等价验收门（与参照逐层比对）—— P1
+│   ├── env_check.py             # 环境自检（无 GPU 可跑）
+│   ├── render_test.py           # 统一渲染测试：core vs 参照 vs 数据集原图
+│   ├── equivalence_check.py     # 数值等价验收门（与参照逐层比对）
 │   └── _compat_shim.py          # 独立脚本用的精简兼容补丁
 ├── pyproject.toml               # 打包配置（src 布局 + console script）
 ├── setup_env.sh                 # 一键建环境（顶层，用户直接跑）
@@ -218,7 +218,7 @@ Live3DGSAvatar/
 | `submodules/diff-gaussian-rasterization` | vendor | 本项目唯一的 CUDA 内核，必须能独立编译、固定版本、按需修改 |
 | `~/Libraries/nvdiffrast` | vendor 到 `submodules/nvdiffrast/` | 见 §4.2 |
 | `~/Libraries/fused-ssim` | vendor 到 `submodules/fused-ssim/` | 见 §4.2 |
-| `submodules/flame`, `submodules/fuhead` | vendor（P1） | 纯 Python，LBS 数学正确，不重写；需明确归属与许可 |
+| `submodules/flame`, `submodules/fuhead` | vendor（待拷入） | 纯 Python，LBS 数学正确，不重写；需明确归属与许可 |
 | `model/`, `diff_renderer/`, `camera/`, `dataset/` | **重写为 `src/`** | 这是本项目的主要工作量 |
 | `train_*.py`, `render*.py`, `utils.py` | **重写为 `app/` + `training/`** | RGBAvatar 的脚本层与本项目形态差异最大 |
 
@@ -249,14 +249,14 @@ error: could not delete 'build/lib.linux-x86_64-cpython-310/nvdiffrast/__init__.
 
 数据集只需 `images/` 与 `checkpoint/` 两项即可驱动 RGBAvatar 的 `FLAMEDataset`；其余为 tracker/INSTA 的中间产物，保留但本项目不读取。
 
-> **数据集范围限制**：本阶段**只以 `duda` 为基准**。所有质量验收（P1 数值等价门、P2 质量对齐门）均以 duda 为准。新增数据集前需先确认其 tracker 链路可复现。
+> **数据集范围限制**：当前**只以 `duda` 为基准**。所有验收均以 duda 为准。新增数据集前需先确认其 tracker 链路可复现。
 
 ---
 
 ## 5. 与 RGBAvatar 的对应关系
 
 参照实现是**只读**的算法蓝本。本项目的重写范围与所有有意偏离，
-**完整登记在 `docs/MIGRATION.md`**（缺陷修复 K1–K4、有意偏离 H1–H6、持续关注 O1–O5、被推翻的推理 D 节）。
+**完整登记在 `docs/MIGRATION.md`**（缺陷修复 K、有意偏离 H、持续关注 O、已排除的错误推理 D）。
 
 简述：`model/` `diff_renderer/` `camera/` `dataset/` 与脚本层**全部重写**；
 `submodules/` 下的 CUDA 扩展与 FLAME/FuHead 实现**vendor 后原样使用**。
@@ -275,7 +275,7 @@ error: could not delete 'build/lib.linux-x86_64-cpython-310/nvdiffrast/__init__.
 | 模型产物 | `.ply`（3DGS 属性 + `xyz_b_*` / `rot_b_*` / `f_dc_b_*` 基 + `face_id` / `face_bary_*` 绑定） | ✅ 本项目写出的文件另含 `comment gaussian_config` 自描述；**参照写出的没有**，结构需由 `configs/render.yaml` 提供 |
 | 模型读取 | `core/io/ply.py::load_ply` → `GaussianAvatar` | ✅ 可用（当前消费参照仓库产出的模型） |
 | 驱动参数 | `[B, D]` 张量，`D = model.network.num_basis_in` | ✅ 已定义 |
-| 渲染接口 | `AvatarRuntime`（见 §7.1） | ⏳ P2 提供 |
+| 渲染接口 | `AvatarRuntime`（见 §7.1） | ⏳ 待实现 |
 | 训练产物落盘 | 同上 `.ply` 约定 | ⏳ 待对方确认 |
 
 **当前阶段**：直接使用数据集与**已有模型**即可，不需要训练。
@@ -300,7 +300,7 @@ Frame(mesh, blend_weight, camera)
 2. **不做逐帧重建**：模型参数固定，每帧只做 `blend + bind + rasterize`。RGBAvatar 实测约 400 FPS（RTX 3090，含动画），这是本架构的性能天花板参考。
 3. **零拷贝**：`GaussianSet` 的 5 个张量直接从 `GaussianAvatar` 的参数视图构造，避免 `expand/cat` 产生的隐式拷贝。
 
-### 7.3 服务端渲染（P3 骨架，本阶段只留接口）
+### 7.3 服务端渲染（预留接口）
 
 `runtime/session.py` 定义：
 
@@ -312,7 +312,7 @@ class Session:
     def push_observation(self, frame: Frame) -> None: ...           # 供在线更新
 ```
 
-`streaming/` 本阶段只留空模块与 TODO，**不实现**。服务端渲染的具体传输方案（WebRTC / 编码器选型）留待 P3 决策。
+`streaming/` 只留空模块与 TODO，**不实现**。具体传输方案（WebRTC / 编码器选型）留待后续决策。
 
 ---
 
@@ -367,35 +367,19 @@ class Session:
 
 ---
 
-## 9. 验收门（每个阶段必须可量化）
+## 9. 当前状态与验收
 
-| 阶段 | 目标 | 验收标准 | 状态 |
-|---|---|---|---|
-| **P0 基线与环境** | 环境可复现 + 基线可复现 | ① 单条命令从零建环境 ② `scripts/env_check.py` 全绿 ③ 用 `duda` 的 `model.ply` 跑通渲染并记录 **FPS / 峰值显存 / 单帧耗时** | ✅ 全部完成 |
-| **P1 只读内核重写** | `core/` 完成，行为与 RGBAvatar 一致 | **数值等价门**：分层比对参照实现，中间属性 `max\|Δ\| < 1e-5`，渲染图 **`PSNR > 60 dB` 或 `max\|Δ\| < 1e-3`**；`tests/equivalence/` 全绿 | ✅ **已验收**（见 9.2） |
-| **P2 应用层 + GUI** | 图形化程序；训练接入点就位 | ① 能读取已有模型并实时预览 ② 训练按 §6 的接入点预留，**待接入**（不自研） | ✅ 前后端完成（协议见 `docs/GUI_PROTOCOL.md`）；**待你首次联调** |
-| **P3 服务化** | 服务端渲染 + 推流 | 端到端延迟 **< 150 ms**（目标 100 ms）；单路稳定 10 分钟 | 未开始 |
-| **P4 动态更新** | 在线训练 | 按帧顺序在线重建，PSNR 与离线差距 **< 1 dB** | 未开始 |
+### 9.1 已完成
 
-**P0 与 P1 之间不可跳过**：数值等价门是本次重写的安全网。没有它，无法区分"架构改进"与"引入了 bug"。
+| 模块 | 验收标准 | 证据 |
+|---|---|---|
+| **环境与基线** | 单条命令建环境；`scripts/env_check.py` 全绿 | `setup_env.sh` 幂等可重跑 |
+| **`core/` 渲染内核** | **数值等价门**：分层比对参照实现，中间属性 `max\|Δ\| < 1e-5`，渲染图 **`PSNR > 60 dB` 或 `max\|Δ\| < 1e-3`** | **31 项全部通过**（见 9.2） |
+| **GUI（前后端）** | 读取已有模型并实时预览 | 协议见 `docs/GUI_PROTOCOL.md` |
 
-### 9.1 P1 交付物
+### 9.2 等价门结果
 
-| 交付物 | 状态 |
-|---|---|
-| `docs/CONVENTIONS.md` | ✅ 坐标/矩阵/空间/精度约定 |
-| `docs/MIGRATION.md` | ✅ 4 项缺陷修复 + 6 项有意偏离 + 5 项持续关注 |
-| `docs/CORE_GUIDE.md` | ✅ 代码导览：形状流转、设计原因、陷阱清单、"验证 X 跑哪条命令" |
-| `core/types.py` · `core/avatar.py` · `core/io/ply.py` | ✅ 类型契约、参数容器、PLY 互操作 |
-| `core/deform/{tbn,bind,blend,binding}.py` | ✅ TBN / 绑定 / 混合 / UV 绑定构建 |
-| `core/render/{camera_utils,rasterizer}.py` | ✅ 矩阵边界 + 两个光栅化后端 |
-| `tests/run_tests.py` · `tests/unit/` | ✅ **零依赖**运行器，**74 项**，全部无需 GPU |
-| `tests/equivalence/` · `scripts/equivalence_check.py` | ✅ 等价门（分层比对 + 前置检查） |
-| `scripts/render_test.py` | ✅ 统一渲染测试：core vs 参照 vs 数据集原图（含 CPU dry-run） |
-
-### 9.2 P1 验收证据（已通过）
-
-**① 数值等价门** —— `python scripts/equivalence_check.py`，**31 项全部通过**：
+`python scripts/equivalence_check.py`，**31 项全部通过**：
 
 | 层 | 结果 |
 |---|---|
@@ -405,23 +389,32 @@ class Session:
 | 绑定（5 项） | `xyz` **2.98e-08**、`rotation` 6.6e-07，其余逐位一致 |
 | 渲染（4 项） | `color` **PSNR 133.47 dB**、`alpha` 135.48 dB |
 
-**② 逐帧渲染复现** —— `python scripts/render_test.py --frames -1`：
+### 9.2.1 逐帧渲染复现
+
+`python scripts/render_test.py --frames -1`：
 
 | 指标 | 结果 |
 |---|---|
 | 可比帧数 | **254 / 254** |
 | 渲染图 PSNR | **中位 101.07 dB**，最小 86.63 dB |
 | `max\|Δ\|` | 中位 **1 / 255**（uint8 最后一位） |
-| 平均耗时 | 11.19 ms/帧（89.3 FPS）·中位 9.86 ms |
-| 峰值显存 | 106 MiB |
-| 参照基线 | 6.94 ms/帧（144 FPS）·峰值 1648 MiB（batch=10 预分配） |
+| 峰值显存 | 106 MiB（参照 batch=1 为 145 MiB） |
 
-**③ 单元测试** —— `python tests/run_tests.py`：**74 通过 / 0 失败 / 1 跳过**（跳过项为需 GPU 的等价测试）。
+### 9.2.2 测试
 
-> **性能说明**：89 FPS vs 参照 144 FPS 的差距来自 `deform` 走纯 PyTorch
-> （`linear_blending` 默认不用 CUDA 内核、TBN 每帧全量重算）。这是**有意识的取舍**：
-> CUDA 版 `linear_blending` 在设备不可用时静默返回全零（见 MIGRATION H4）。
-> 优化项已记入 MIGRATION O 节，不影响 P1 验收。
+| 命令 | 覆盖 |
+|---|---|
+| `python tests/run_tests.py` | **119 通过 / 0 失败 / 1 跳过**（跳过项为需 GPU 的等价测试） |
+| `node web/tests/all.mjs` | **36 通过**（协议、帧解析、控件装配、id 一致性） |
+
+### 9.2.3 性能
+
+`core/` 走**纯 PyTorch**（`linear_blending` 默认不用 CUDA 内核），
+batch=1 单帧约 **5.3 ms**（deform 2.9 + rasterize 2.5），**约 190 FPS**；
+参照走 CUDA 内核约 2.4 ms。
+
+这是**有意识的取舍**：CUDA 版 `linear_blending` 在设备不可用时**静默返回全零**（见 `docs/MIGRATION.md` H4）。
+GUI 的目标帧率是 30–60 FPS，**余量充足**；需要再提速时见 §11.2。
 
 ### 9.3 分层规则的可执行化
 
@@ -438,7 +431,7 @@ class Session:
 | 兼容补丁顺序 | 加载参照实现的模块必须在模块层 `import live3dgsavatar`（否则 chumpy ImportError，见 `ENVIRONMENT.md` §3.10） |
 | FLAME dtype | 不得覆盖 `FlameConfig.dtype`（float64 是刻意的，见 `ENVIRONMENT.md` §3.11） |
 
-**「导入 `core` 不需要 GPU」** 这一性质尤其重要：CPU 侧的 74 项测试才得以成立。
+**「导入 `core` 不需要 GPU」** 这一性质尤其重要：CPU 侧的 119 项测试才得以成立。
 
 ### 9.4 等价门的执行结构
 
@@ -479,42 +472,30 @@ C 节：5 项持续关注 O1–O5）。核心几条：
 
 ---
 
-## 11. 里程碑顺序
+## 11. 后续方向
 
-```
-P0 基线与环境 ──► P1 只读内核重写 ──► P2 训练重写 + GUI ──► P3 服务化 ──► P4 动态更新
-     (必须)          (数值等价门)         (质量对齐门)        (延迟门)
-```
+当前**链路已打通**：加载已有模型 → 渲染 → 推流 → 浏览器实时预览。
 
-**建议从 P0 + P1 开始**：P0 把环境与基线锁死，P1 把 `core/` 写完并用数值等价门验证。这两步完成后，后续所有工作都在一个可信的基础上进行。
+### 11.1 动态更新（唯一在册的目标）
 
----
+让模型在通话过程中**持续适应**新到达的帧，而不是只消费训练好的静态模型。
 
-## 附录 A：未来工作（本阶段不做，仅记录）
+- **现状**：驱动参数来自数据集里已有的采样（`source.kind = "checkpoint"`）
+- **目标**：接入实时采集的驱动参数，并让模型随之在线微调
+- **协议已留钩子**：`source.kind = "live"`（前端置灰，后端忽略该分支的字段）
+- **未定项**：在线更新的触发策略、抗遗忘采样、与预训练（合作方提供）的接口边界
 
-### A.0 性能：接入 `mesh_binding` CUDA 内核（已评估，暂不做）
+> 这一部分**路线完全未定**，需要先做深入构思与设计，不宜现在排期。
 
-| 项 | 内容 |
+### 11.2 已评估、暂不做
+
+| 项 | 何时再考虑 |
 |---|---|
-| 现状 | deform 约 3.4 ms/帧，其中 `matrix_to_quaternion` + `quaternion_multiply` 占 65%（1.91 ms）。整帧 5.96 ms（167.7 FPS），参照 2.36 ms（424 FPS） |
-| 根因 | 四元数运算每元素 14–17 ns，**远超算术需求**（应为 ~2-3 ns）。原因是产生 30+ 个中间张量；参照的 `mesh_binding.cu` 用**一个 kernel** 全做完 |
-| 方案 | 直接用已 vendored 的 `diff_gaussian_rasterization.mesh_binding` 替换纯 PyTorch 绑定。**这不是重写 CUDA**，内核已编译好，只是从"PyTorch 复现其数学"改成"直接调用" |
-| 预期 | deform 3.4 → ~0.3 ms，整帧 5.96 → ~2.7 ms（**约 370 FPS**） |
-| 难度 | 中（约 1–2 小时 + 验证） |
-| 风险 | 低：数值等价由等价门当场验证；保留纯 PyTorch 路径作开关。⚠️ 需显式设备检查（同类 CUDA 算子曾静默返回全零） |
-| 为何暂不做 | 167 FPS 已远超显示器刷新率；`rasterize` 的 ~2.1 ms 是参照也付的成本，**上限只到 ~450 FPS**，收益有限 |
-
-
-
-| 方向 | 说明 | 触发条件 |
-|---|---|---|
-| **上半身/肩颈** | 需引入混合拓扑模板（个性化人体网格挖空面/手 + FLAME 面部 + MANO 手 + 蒙皮权重迁移）与独立的身体高斯集合 | P2 完成后评估 |
-| **实时 tracker** | 当前依赖离线 metrical-tracker。实时需自建 "2D landmark → FLAME 系数" 回归器 | P4 后 |
-| **前馈重建路线** | VoluMe 类方法（单帧 → U-Net → splatter image）。瓶颈在合成训练数据管线而非网络结构 | 单独预研 |
-| **光照解耦** | 当前颜色为 SH DC（视角无关、烘焙）。通话中光照变化无法适应 | 需要 relightable 表示 |
-| **多部件合成** | `HeadPart` 之外的 `BodyPart` / `HandsPart`，共用同一 `DeformationField` 接口 | 与上半身同步 |
-| **服务端并发** | 单卡多路会话调度与资源隔离 | P3 之后 |
-| **商业化替换** | FLAME（非商用）/ FaceWarehouse / DDE 的替代方案 | 商用决策后 |
+| 接入 `mesh_binding` CUDA 内核（deform 3.4 → ~0.3 ms） | 需要更高分辨率、多路流，或在线更新需要梯度路径时。内核已 vendored，且**自带 backward** |
+| 用官方 3DGS 光栅化器替换改造版 | 纯依赖整洁性收益，无性能收益；且验证链条仍需改造版（见 `docs/MIGRATION.md`） |
+| 上半身/肩颈扩展 | 需引入混合拓扑模板与蒙皮权重迁移 |
+| 光照解耦 | 当前颜色为 SH DC（烘焙），通话中光照变化无法适应 |
+| 服务端并发（单卡多路） | 多会话调度与资源隔离 |
 
 ## 附录 B：术语表
 

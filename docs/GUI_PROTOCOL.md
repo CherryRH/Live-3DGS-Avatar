@@ -1,6 +1,7 @@
-# GUI 前后端协议（P2）
+# GUI 前后端协议
 
-> **状态**：**前后端均已实现**。启动：`bash run_gui.sh`（默认 <http://127.0.0.1:8000>）。
+> **状态**：前后端均已实现。启动：`bash run_gui.sh`（默认 <http://localhost:8000>，
+> 服务以 dual-stack 监听，`127.0.0.1` 同样可用）。
 > 前端可脱离后端独立运行（mock 模式，见 §4）。
 >
 > **代码位置**：前端 `web/`；后端 `src/live3dgsavatar/app/`

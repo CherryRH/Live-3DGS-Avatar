@@ -223,7 +223,7 @@ python tests/run_tests.py            # 零依赖，未装 pytest 也能跑
   ⚠️ 这里**极易搞错**：CUDA `face_tbn.cu` 返回的是「行为基」的版本（内部有 `transpose`），
   而参照 Python 侧与本项目都是「列为基」。**跨来源比对布局必错。**
   这一层还无法自证（`mesh_binding` 是逐元素操作，`R` 与 `Rᵀ` 都数学自洽），
-  判据只能是**与参照逐位一致**。详见 `CONVENTIONS.md` §3.2.1 与 MIGRATION D.1。
+  判据只能是**与参照逐位一致**。详见 `CONVENTIONS.md` §3.2.1 与 MIGRATION D。
 - **TBN 的 tangent 与 bitangent 一般不正交**，这是 UV 参数化的正常现象，
   不是缺陷（`normalize(t)·normalize(b) = −cos(∠A')`）。**不要试图"修"它。**
 - **退化面**（UV 面积趋零）会使 `f = 1/det` 爆炸，理论上可产生 `nan`。
